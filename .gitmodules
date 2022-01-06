@@ -1,0 +1,3 @@
+[submodule "deps/uuid6-zig"]
+	path = deps/uuid6-zig
+	url = https://github.com/jdknezek/uuid6-zig

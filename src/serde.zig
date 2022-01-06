@@ -1,128 +1,217 @@
 const std = @import("std");
-const Reader = std.io.Reader;
 const meta = std.meta;
+const assert = std.debug.assert;
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-pub fn Num(comptime T: type, comptime endianness: std.builtin.Endian) type {
+pub fn NumSpec(comptime T: type, endian: std.builtin.Endian) type {
+    if (@typeInfo(T) != .Int) {
+        @compileError("expected an int");
+    }
     return struct {
-        data: T,
-        pub const IntType = T;
-
-        const Self = @This();
-        pub fn deserialize(alloc: Allocator, reader: anytype) !Self {
+        pub const UserType = T;
+        pub fn write(self: UserType, writer: anytype) !void {
+            try writer.writeInt(T, self, endian);
+        }
+        pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
             _ = alloc;
-            return Self{ .data = try reader.readInt(T, endianness) };
+            return reader.readInt(T, endian);
         }
-        pub fn write(self: T, writer: anytype) !void {
-            try writer.writeInt(T, self.data, endianness);
-        }
-        pub fn deinit(self: Self, alloc: Allocator) void {
+        pub fn deinit(self: UserType, alloc: Allocator) void {
             _ = self;
             _ = alloc;
         }
-    };
-}
-
-pub fn SerdeIntType(comptime T: type) type {
-    const info = @typeInfo(T);
-    if (info == .Int) {
-        return T;
-    } else if (@hasDecl(T, "IntType")) {
-        return @field(T, "IntType");
-    }
-    @compileError(@typeName(T) ++ " does not have an integer type");
-}
-pub fn getSerdeInt(val: anytype) SerdeIntType(@TypeOf(val)) {
-    if (@typeInfo(@TypeOf(val)) == .Int) {
-        return val;
-    } else if (@hasField(@TypeOf(val), "data")) {
-        return @field(val, "data");
-    }
-}
-
-pub fn SerdeEnum(comptime SerializableType: type, comptime EnumType: type) type {
-    return struct {
-        data: EnumType,
-
-        const Self = @This();
-        pub fn deserialize(alloc: Allocator, reader: anytype) !Self {
-            const val = getSerdeInt(try SerdeType(SerializableType).deserialize(alloc, reader));
-            return Self{ .data = @intToEnum(EnumType, @intCast(meta.Tag(EnumType), val)) };
-        }
-        pub fn write(self: Self, writer: anytype) !void {
-            const val = @intCast(SerdeIntType(SerializableType), @enumToInt(self.data));
-            try SerdeType(SerializableType).write(if (@typeInfo(SerializableType) == .Int) val else SerializableType{ .data = val }, writer);
-        }
-        pub fn deinit(self: Self, alloc: Allocator) void {
+        pub fn size(self: UserType) usize {
             _ = self;
-            _ = alloc;
+            return @sizeOf(T);
         }
     };
 }
 
-test "serde enum" {
-    const TestEnum = enum(u8) {
-        A = 0,
-        B = 1,
-        C = 2,
-    };
-    var stream = std.io.fixedBufferStream(&[_]u8{0});
-    try std.testing.expect((try SerdeEnum(u8, TestEnum).deserialize(std.testing.allocator, stream.reader())) == .A);
-    stream = std.io.fixedBufferStream(&[_]u8{1});
-    try std.testing.expect((try SerdeEnum(u8, TestEnum).deserialize(std.testing.allocator, stream.reader())) == .B);
-    stream = std.io.fixedBufferStream(&[_]u8{2});
-    try std.testing.expect((try SerdeEnum(u8, TestEnum).deserialize(std.testing.allocator, stream.reader())) == .C);
-}
-
-pub const DeserializeTaggedUnionError = error{
-    InvalidTag,
+pub const BoolSpec = struct {
+    pub const UserType = bool;
+    pub fn write(self: UserType, writer: anytype) !void {
+        try writer.writeByte(if (self) 0x01 else 0x00);
+    }
+    pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+        _ = alloc;
+        return (try reader.readByte()) == 0x01;
+    }
+    pub fn deinit(self: UserType, alloc: Allocator) void {
+        _ = self;
+        _ = alloc;
+    }
+    pub fn size(self: UserType) usize {
+        _ = self;
+        return 1;
+    }
 };
-pub fn SerdeTaggedUnion(comptime SerializableTagType: type, comptime UnionType: type) type {
-    return struct {
-        data: UnionType,
 
-        const Self = @This();
-        pub fn deserialize(alloc: Allocator, reader: anytype) !Self {
-            const val = getSerdeInt(try SerdeType(SerializableTagType).deserialize(alloc, reader));
-            const tag_int = @intCast(meta.Tag(meta.Tag(UnionType)), val);
-            inline for (meta.fields(UnionType)) |_field, _i| {
-                const i = _i;
-                const field = _field;
-                const enum_field = meta.fieldInfo(meta.Tag(UnionType), @intToEnum(meta.FieldEnum(meta.Tag(UnionType)), i));
+pub const VoidSpec = struct {
+    pub const UserType = void;
+    pub fn write(self: UserType, writer: anytype) !void {
+        _ = self;
+        _ = writer;
+    }
+    pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+        _ = alloc;
+        _ = reader;
+    }
+    pub fn deinit(self: UserType, alloc: Allocator) void {
+        _ = self;
+        _ = alloc;
+    }
+    pub fn size(self: UserType) usize {
+        _ = self;
+        return 0;
+    }
+};
+
+pub fn StructSpec(comptime PartialSpec: type, comptime UserType: type) type {
+    const info = @typeInfo(PartialSpec);
+    const userInfo = @typeInfo(UserType);
+    var specs: [info.Struct.fields.len]type = undefined;
+    inline for (info.Struct.fields) |field, i| {
+        const user_field = userInfo.Struct.fields[i];
+        comptime assert(std.mem.eql(u8, field.name, user_field.name));
+        const SpecType = FullSpec(field.field_type, user_field.field_type);
+        specs[i] = SpecType;
+    }
+    const spec_list = specs;
+    return struct {
+        pub const UserType = UserType;
+        pub const Specs = spec_list;
+        pub fn write(self: UserType, writer: anytype) !void {
+            inline for (info.Struct.fields) |field, i| {
+                try Specs[i].write(@field(self, field.name), writer);
+            }
+        }
+        pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+            var data: UserType = undefined;
+            inline for (info.Struct.fields) |field, i| {
+                @field(data, field.name) = try Specs[i].deserialize(alloc, reader);
+            }
+            return data;
+        }
+        pub fn deinit(self: UserType, alloc: Allocator) void {
+            inline for (info.Struct.fields) |field, i| {
+                Specs[i].deinit(@field(self, field.name), alloc);
+            }
+        }
+        pub fn size(self: UserType) usize {
+            var total_size: usize = 0;
+            inline for (info.Struct.fields) |field, i| {
+                total_size += Specs[i].size(@field(self, field.name));
+            }
+            return total_size;
+        }
+    };
+}
+
+pub fn isIntType(comptime SpecType: type) bool {
+    if (isSerializable(SpecType)) {
+        return @typeInfo(SpecType.UserType) == .Int;
+    } else {
+        return @typeInfo(SpecType) == .Int;
+    }
+}
+
+pub fn EnumSpec(comptime TagType: type, comptime UserType: type) type {
+    const TagSpec = FullSpec(TagType, meta.Tag(UserType));
+    assert(@typeInfo(TagSpec.UserType) == .Int);
+    assert(@typeInfo(UserType) == .Enum);
+    return struct {
+        pub const UserType = UserType;
+        pub fn getInt(self: UserType) TagSpec.UserType {
+            return @intCast(TagSpec.UserType, @enumToInt(self));
+        }
+        pub fn write(self: UserType, writer: anytype) !void {
+            try TagSpec.write(getInt(self), writer);
+        }
+        pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+            return @intToEnum(UserType, try TagSpec.deserialize(alloc, reader));
+        }
+        pub fn deinit(self: UserType, alloc: Allocator) void {
+            _ = self;
+            _ = alloc;
+        }
+        pub fn size(self: UserType) usize {
+            return TagSpec.size(getInt(self));
+        }
+    };
+}
+
+pub fn TaggedUnionSpec(comptime TagType: type, comptime PartialUnionSpec: type) type {
+    const UserType = FullUser(PartialUnionSpec);
+    //const UnionSpec = FullSpec(PartialUnionSpec, UserType);
+    const TagSpec = FullSpec(TagType, meta.Tag(meta.Tag(UserType)));
+    assert(@typeInfo(TagSpec.UserType) == .Int);
+    assert(@typeInfo(PartialUnionSpec) == .Union); // UnionSpec.UserType should be same as UserType
+    assert(@typeInfo(UserType) == .Union);
+    const info = @typeInfo(PartialUnionSpec);
+    const userInfo = @typeInfo(UserType);
+    var specs: [info.Union.fields.len]type = undefined;
+    inline for (info.Union.fields) |field, i| {
+        const user_field = userInfo.Union.fields[i];
+        comptime assert(std.mem.eql(u8, field.name, user_field.name));
+        specs[i] = FullSpec(field.field_type, user_field.field_type);
+    }
+    const spec_list = specs;
+    return struct {
+        pub const UserType = UserType;
+        pub const Specs = spec_list;
+        pub fn getInt(self: UserType) TagSpec.UserType {
+            return @intCast(TagSpec.UserType, @enumToInt(self));
+        }
+        pub fn write(self: UserType, writer: anytype) !void {
+            const tag_int = getInt(self);
+            try TagSpec.write(tag_int, writer);
+            inline for (meta.fields(UserType)) |field, i| {
+                const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
                 if (enum_field.value == tag_int) {
-                    const serde_type = SerdeType(field.field_type);
-                    const de_val_result = serde_type.deserialize(alloc, reader);
-                    if (meta.isError(de_val_result)) { // hack. compiler bug: https://github.com/ziglang/zig/issues/10087
-                        _ = de_val_result catch |err| return err;
-                    }
-                    const de_val = de_val_result catch unreachable;
-                    const data = @unionInit(UnionType, field.name, de_val);
-                    return Self{ .data = data };
+                    const res = Specs[i].write(@field(self, field.name), writer);
+                    if (meta.isError(res)) res catch |err| return err;
+                    return;
                 }
             }
-            return DeserializeTaggedUnionError.InvalidTag;
+            return error.InvalidTag;
         }
-        pub fn write(self: Self, writer: anytype) !void {
-            const tag_int = @enumToInt(self.data);
-            const target_casted_tag = @intCast(SerdeIntType(SerializableTagType), tag_int);
-            try SerdeType(SerializableTagType).write(if (@typeInfo(SerializableTagType) == .Int) target_casted_tag else SerializableTagType{ .data = target_casted_tag }, writer);
-            inline for (meta.fields(UnionType)) |field| {
-                if (@enumToInt(comptime meta.stringToEnum(meta.Tag(UnionType), field.name).?) == tag_int) {
-                    const serde_type = SerdeType(field.field_type);
-                    try serde_type.write(@field(self.data, field.name), writer);
+        pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+            const tag_int = try TagSpec.deserialize(alloc, reader);
+            inline for (meta.fields(UserType)) |field, i| {
+                const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
+                if (enum_field.value == tag_int) {
+                    // untested if this workaround is necessary for write, but it
+                    // is necessary for deserialize https://github.com/ziglang/zig/issues/10087
+                    const res = Specs[i].deserialize(alloc, reader);
+                    if (meta.isError(res)) _ = res catch |err| return err;
+                    const val = res catch unreachable;
+                    return @unionInit(UserType, field.name, val);
+                }
+            }
+            return error.InvalidTag;
+        }
+        pub fn deinit(self: UserType, alloc: Allocator) void {
+            const tag_int = getInt(self);
+            inline for (meta.fields(UserType)) |field, i| {
+                _ = field;
+                const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
+                if (enum_field.value == tag_int) {
+                    Specs[i].deinit(@field(self, field.name), alloc);
                     return;
                 }
             }
         }
-        pub fn deinit(self: Self, alloc: Allocator) void {
-            const tag_int = @enumToInt(self.data);
-            inline for (meta.fields(UnionType)) |field| {
-                if (@enumToInt(comptime meta.stringToEnum(meta.Tag(UnionType), field.name).?) == tag_int) {
-                    const serde_type = SerdeType(field.field_type);
-                    serde_type.deinit(@field(self.data, field.name), alloc);
-                    return;
+        pub fn size(self: UserType) usize {
+            const tag_int = getInt(self);
+            inline for (meta.fields(UserType)) |field, i| {
+                _ = field;
+                const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
+                if (enum_field.value == tag_int) {
+                    return TagSpec.size(tag_int) + Specs[i].size(@field(self, field.name));
                 }
             }
+            return 0;
         }
     };
 }
@@ -132,95 +221,208 @@ test "serde tagged union" {
         A = 0,
         B = 1,
         C = 2,
+        D = 4,
     };
     const TestUnion = union(TestEnum) {
         A: u8,
         B: u16,
         C: void,
+        D: struct {
+            a: i32,
+            b: bool,
+        },
     };
+    const SerdeUnion = TaggedUnionSpec(u8, TestUnion);
     inline for (.{
-        .{ .buf = [_]u8{ 0, 5 }, .desired = TestUnion{ .A = 5 } },
-        .{ .buf = [_]u8{ 1, 1, 0 }, .desired = TestUnion{ .B = 256 } },
-        .{ .buf = [_]u8{2}, .desired = TestUnion.C },
+        .{ .buf = [_]u8{ 0x00, 0x05 }, .desired = SerdeUnion.UserType{ .A = 5 } },
+        .{ .buf = [_]u8{ 0x01, 0x01, 0x00 }, .desired = SerdeUnion.UserType{ .B = 256 } },
+        .{ .buf = [_]u8{0x02}, .desired = SerdeUnion.UserType.C },
+        .{ .buf = [_]u8{ 0x04, 0x00, 0x00, 0x00, 0x08, 0x01 }, .desired = SerdeUnion.UserType{ .D = .{ .a = 8, .b = true } } },
     }) |pair| {
         var stream = std.io.fixedBufferStream(&pair.buf);
-        const result = try SerdeTaggedUnion(u8, TestUnion).deserialize(std.testing.allocator, stream.reader());
-        try std.testing.expect(meta.eql(result, pair.desired));
+        const result = try SerdeUnion.deserialize(testing.allocator, &stream.reader());
+        try testing.expect(meta.eql(result, pair.desired));
     }
 }
 
-pub fn SerdeNum(comptime T: type) type {
+pub fn FullSpec(comptime PartialSpec: type, comptime UserType: type) type {
+    if (isSerializable(PartialSpec)) {
+        // PartialSpec.UserType should be the same as UserType
+        return PartialSpec;
+    }
+    switch (@typeInfo(PartialSpec)) {
+        .Void => return VoidSpec,
+        .Bool => return BoolSpec,
+        .Int => return NumSpec(UserType, .Big), // UserType should be the same type as PartialSpec
+        .Struct => return StructSpec(PartialSpec, UserType),
+        .Optional => return OptionalSpec(PartialSpec, UserType),
+        else => @compileError("dont know how to do full spec for " ++ @typeName(PartialSpec) ++ " and " ++ @typeName(UserType)),
+    }
+}
+
+pub fn isSerializable(comptime T: type) bool {
+    const info = @typeInfo(T);
+    if (info == .Struct or info == .Union or info == .Enum) {
+        inline for (.{ "write", "deserialize", "size", "UserType" }) |name| {
+            if (!@hasDecl(T, name)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+pub fn FullUser(comptime T: type) type {
+    if (isSerializable(T)) {
+        return T.UserType;
+    }
+    switch (@typeInfo(T)) {
+        .Int, .Float, .Enum, .Bool, .Void => return T,
+        .Struct => |info| {
+            var fields: [info.fields.len]std.builtin.TypeInfo.StructField = undefined;
+            inline for (info.fields) |*field, i| {
+                var f = field.*;
+                f.field_type = FullUser(field.field_type);
+                f.default_value = null;
+                fields[i] = f;
+            }
+            return @Type(std.builtin.TypeInfo{ .Struct = .{
+                .layout = info.layout,
+                .fields = &fields,
+                .decls = &[_]std.builtin.TypeInfo.Declaration{},
+                .is_tuple = info.is_tuple,
+            } });
+        },
+        .Union => |info| {
+            var fields: [info.fields.len]std.builtin.TypeInfo.UnionField = undefined;
+            inline for (info.fields) |*field, i| {
+                var f = field.*;
+                f.field_type = FullUser(field.field_type);
+                fields[i] = f;
+            }
+            return @Type(std.builtin.TypeInfo{ .Union = .{
+                .layout = info.layout,
+                .tag_type = info.tag_type,
+                .fields = &fields,
+                .decls = &[_]std.builtin.TypeInfo.Declaration{},
+            } });
+        },
+        .Optional => |info| return @Type(std.builtin.TypeInfo{ .Optional = .{ .child = FullUser(info.child) } }),
+        else => @compileError("dont know how to generate user type for " ++ @typeName(T)),
+    }
+}
+
+test "serder" {
+    const EnumType = enum(u8) { A = 0x00, B = 0x01, C = 0x02 };
+    const PartialSpecType = struct {
+        a: i32,
+        b: struct {
+            c: bool,
+            d: u8,
+            e: NumSpec(u16, .Little),
+        },
+        c: EnumSpec(u8, EnumType),
+    };
+    const UserType = FullUser(PartialSpecType);
+    const SpecType = FullSpec(PartialSpecType, UserType);
+
+    const buf = [_]u8{ 0x00, 0x00, 0x01, 0x02, 0x01, 0x08, 0x10, 0x00, 0x02 };
+    var reader = std.io.fixedBufferStream(&buf);
+    const result: UserType = try SpecType.deserialize(testing.allocator, &reader.reader());
+    try testing.expectEqual(result.a, 258);
+    try testing.expectEqual(result.b.c, true);
+    try testing.expectEqual(result.b.d, 0x08);
+    try testing.expectEqual(result.b.e, 0x10);
+    try testing.expectEqual(EnumType.C, result.c);
+}
+
+pub const Remaining = struct {
+    pub const UserType = []const u8;
+    pub fn write(self: UserType, writer: anytype) !void {
+        try writer.writeAll(self);
+    }
+    pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+        var data = std.ArrayList(u8).init(alloc);
+        var buf: [1024]u8 = undefined;
+        while (true) {
+            const len = try reader.read(&buf);
+            if (len == 0) {
+                break;
+            }
+            try data.appendSlice(buf[0..len]);
+        }
+        return data.toOwnedSlice();
+    }
+    pub fn deinit(self: UserType, alloc: Allocator) void {
+        alloc.free(self);
+    }
+    pub fn size(self: UserType) usize {
+        return self.len;
+    }
+};
+
+pub fn LengthPrefixedArray(comptime PartialLengthSpec: type, comptime PartialSpec: type) type {
+    const LengthSpec = FullSpec(PartialLengthSpec, void);
+    const UserElementType = FullUser(PartialSpec);
+    const SpecType = FullSpec(PartialSpec, UserElementType);
     return struct {
-        pub fn deserialize(alloc: Allocator, reader: anytype) !T {
-            _ = alloc;
-            return try reader.readInt(T, .Big);
+        pub const UserType = []const UserElementType;
+        pub fn write(self: UserType, writer: anytype) !void {
+            try LengthSpec.write(@intCast(LengthSpec.UserType, self.len), writer);
+            for (self) |elem| {
+                try SpecType.write(elem, writer);
+            }
         }
-        pub fn write(self: T, writer: anytype) !void {
-            try writer.writeInt(T, self, .Big);
+        pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+            const len = @intCast(usize, try LengthSpec.deserialize(alloc, reader));
+            var data = try alloc.alloc(UserElementType, len);
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                data[i] = try SpecType.deserialize(alloc, reader);
+            }
+            return data;
         }
-        pub fn deinit(self: T, alloc: Allocator) void {
-            _ = self;
-            _ = alloc;
+        pub fn deinit(self: UserType, alloc: Allocator) void {
+            alloc.free(self);
+        }
+        pub fn size(self: UserType) usize {
+            var total_size = LengthSpec.size(@intCast(LengthSpec.UserType, self.len));
+            for (self) |elem| {
+                total_size += SpecType.size(elem);
+            }
+            return total_size;
         }
     };
 }
 
-pub fn SerdeType(comptime T: type) type {
-    const info = @typeInfo(T);
-    if (info == .Void) {
-        return struct {
-            pub fn deserialize(alloc: Allocator, reader: anytype) !void {
-                _ = alloc;
-                _ = reader;
+pub fn OptionalSpec(comptime PartialSpec: type, comptime UserType: type) type {
+    const InnerUserType = @typeInfo(UserType).Optional.child;
+    const InnerSpec = FullSpec(@typeInfo(PartialSpec).Optional.child, InnerUserType);
+    return struct {
+        pub const UserType = UserType;
+        pub fn write(self: UserType, writer: anytype) !void {
+            try BoolSpec.write(self != null, writer);
+            if (self) |inner| {
+                try InnerSpec.write(inner, writer);
             }
-            pub fn write(self: T, writer: anytype) !void {
-                _ = self;
-                _ = writer;
+        }
+        pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+            if (try BoolSpec.deserialize(alloc, reader)) {
+                return try InnerSpec.deserialize(alloc, reader);
             }
-            pub fn deinit(self: T, alloc: Allocator) void {
-                _ = self;
-                _ = alloc;
+            return null;
+        }
+        pub fn deinit(self: UserType, alloc: Allocator) void {
+            if (self) |inner| {
+                InnerSpec.deinit(inner, alloc);
             }
-        };
-    }
-    if (info == .Int) {
-        return SerdeNum(T);
-    }
-    if (info == .Bool) {
-        return SerdeEnum(u8, enum(u8) {
-            False = 0x00,
-            True = 0x01,
-            pub fn to_bool(self: @This()) bool {
-                switch (self) {
-                    .False => return false,
-                    .True => return true,
-                }
+        }
+        pub fn size(self: UserType) usize {
+            if (self) |inner| {
+                return 1 + InnerSpec.size(inner);
             }
-        });
-    }
-    if (@hasDecl(T, "deserialize") and @hasDecl(T, "deinit") and @hasDecl(T, "write")) {
-        return T;
-    }
-    if (info == .Struct) {
-        return struct {
-            pub fn deserialize(alloc: Allocator, reader: anytype) !T {
-                var packet: T = undefined;
-                inline for (meta.fields(T)) |field| {
-                    @field(packet, field.name) = try SerdeType(field.field_type).deserialize(alloc, reader);
-                }
-                return packet;
-            }
-            pub fn write(self: T, writer: anytype) !void {
-                inline for (meta.fields(T)) |field| {
-                    try SerdeType(field.field_type).write(@field(self, field.name), writer);
-                }
-            }
-            pub fn deinit(self: T, alloc: Allocator) void {
-                inline for (meta.fields(T)) |field| {
-                    SerdeType(field.field_type).deinit(@field(self, field.name), alloc);
-                }
-            }
-        };
-    }
-    @compileError("Don't know how to serde " ++ @typeName(T));
+            return 1;
+        }
+    };
 }

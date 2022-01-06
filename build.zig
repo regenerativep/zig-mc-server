@@ -14,6 +14,7 @@ pub fn build(b: *std.build.Builder) void {
     const exe = b.addExecutable("zig-mc-server", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
+    exe.addPackagePath("uuid6", "deps/uuid6-zig/src/Uuid.zig");
     exe.install();
 
     const run_cmd = exe.run();
