@@ -895,10 +895,10 @@ pub const P = struct {
         ChunkDataAndUpdateLight: struct {
             chunk_x: i32,
             chunk_z: i32,
-            heightmaps: nbt.NbtSpec.Spec(struct {
+            heightmaps: nbt.NamedSpec(nbt.NbtSpec.Spec(struct {
                 MOTION_BLOCKING: []i64,
                 WORLD_SURFACE: ?[]i64,
-            }),
+            }), ""),
             data: serde.SizePrefixedArray(Ds, VarInt, ChunkSectionSpec),
             block_entities: serde.PrefixedArray(Ds, VarInt, BlockEntity),
             trust_edges: bool,
