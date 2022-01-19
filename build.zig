@@ -1,4 +1,5 @@
 const std = @import("std");
+const zlib = @import("deps/zig-zlib/zlib.zig");
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -11,10 +12,15 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
+    const lib_zlib = zlib.create(b, target, mode);
+
     const exe = b.addExecutable("zig-mc-server", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
+
+    lib_zlib.link(exe, .{ .import_name = "zlib" });
     exe.addPackagePath("uuid6", "deps/uuid6-zig/src/Uuid.zig");
+
     exe.install();
 
     const run_cmd = exe.run();
