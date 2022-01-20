@@ -28,29 +28,29 @@ pub const NamedTag = struct {
     tag: Tag,
     name: []const u8,
 
-    const NameSpec = serde.PrefixedArray(serde.DefaultSpec, u16, u8);
+    pub const NameType = serde.PrefixedArray(serde.DefaultSpec, u16, u8);
 
     pub const UserType = @This();
     pub fn write(self: UserType, writer: anytype) !void {
         try writer.writeByte(@enumToInt(self.tag));
         if (self.tag != .End) {
-            try NameSpec.write(self.name, writer);
+            try NameType.write(self.name, writer);
         }
     }
     pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
         const tag = @intToEnum(Tag, try reader.readByte());
-        const name = if (tag != .End) try NameSpec.deserialize(alloc, reader) else "";
+        const name = if (tag != .End) try NameType.deserialize(alloc, reader) else "";
         return UserType{
             .tag = tag,
             .name = name,
         };
     }
     pub fn deinit(self: UserType, alloc: Allocator) void {
-        NameSpec.deinit(self.name, alloc);
+        NameType.deinit(self.name, alloc);
     }
     pub fn size(self: UserType) usize {
         if (self.tag == .End) return 1;
-        return 1 + NameSpec.size(self.name);
+        return 1 + NameType.size(self.name);
     }
 
     pub fn getNbtType(self: UserType) ?Tag {
@@ -84,8 +84,8 @@ pub const CompoundError = error{
     NoEnd,
 };
 
-pub fn CompoundFieldSpecs(comptime UsedSpec: type, comptime PartialSpec: type) [meta.fields(PartialSpec).len]type {
-    const info = @typeInfo(PartialSpec).Struct;
+pub fn CompoundFieldSpecs(comptime UsedSpec: type, comptime Partial: type) [meta.fields(Partial).len]type {
+    const info = @typeInfo(Partial).Struct;
     var specs: [info.fields.len]type = undefined;
     inline for (info.fields) |field, i| {
         const sub_info = @typeInfo(field.field_type);
@@ -95,8 +95,8 @@ pub fn CompoundFieldSpecs(comptime UsedSpec: type, comptime PartialSpec: type) [
     return specs;
 }
 
-pub fn CompoundUserType(comptime PartialSpec: type, comptime Specs: []const type) type {
-    const info = @typeInfo(PartialSpec).Struct;
+pub fn CompoundUserType(comptime Partial: type, comptime Specs: []const type) type {
+    const info = @typeInfo(Partial).Struct;
     var fields: [info.fields.len]builtin.TypeInfo.StructField = undefined;
     inline for (info.fields) |*field, i| {
         var f = field.*;
@@ -117,29 +117,26 @@ pub fn CompoundUserType(comptime PartialSpec: type, comptime Specs: []const type
     } });
 }
 
-pub fn CompoundSpec(comptime UsedSpec: type, comptime PartialSpec: type) type {
+pub fn Compound(comptime UsedSpec: type, comptime Partial: type) type {
     return struct {
-        pub const FieldEnum = meta.FieldEnum(PartialSpec);
-        pub const Specs = CompoundFieldSpecs(UsedSpec, PartialSpec);
-        pub const UserType = CompoundUserType(PartialSpec, std.mem.span(&Specs));
+        pub const FieldEnum = meta.FieldEnum(Partial);
+        pub const Specs = CompoundFieldSpecs(UsedSpec, Partial);
+        pub const UserType = CompoundUserType(Partial, std.mem.span(&Specs));
         pub fn write(self: UserType, writer: anytype) !void {
             // go through each field and write it
-            inline for (meta.fields(PartialSpec)) |field, i| {
+            inline for (meta.fields(Partial)) |field, i| {
                 // special case for optional field types; if field is optional and null, dont write it
                 const is_optional = @typeInfo(field.field_type) == .Optional;
                 const data = @field(self, field.name);
                 const found_data: if (is_optional) @TypeOf(data) else ?@TypeOf(data) = data;
                 // wtf
                 if (found_data) |actual_data| {
-                    // might want to just compile error if not nbt serializable, TODO
-                    if (isNbtSerializable(Specs[i])) {
-                        if (Specs[i].getNbtType(actual_data)) |tag| {
-                            const named_tag = NamedTag{
-                                .tag = tag,
-                                .name = field.name,
-                            };
-                            try named_tag.write(writer);
-                        }
+                    if (Specs[i].getNbtType(actual_data)) |tag| {
+                        const named_tag = NamedTag{
+                            .tag = tag,
+                            .name = field.name,
+                        };
+                        try named_tag.write(writer);
                     }
                     try Specs[i].write(actual_data, writer);
                 }
@@ -164,7 +161,7 @@ pub fn CompoundSpec(comptime UsedSpec: type, comptime PartialSpec: type) type {
             //     before writing to any optional field, it would be fine since the optional field would just be null
             var total_written_fields = comptime blk: {
                 var written_fields = std.StaticBitSet(Specs.len).initEmpty();
-                inline for (meta.fields(PartialSpec)) |field, i| {
+                inline for (meta.fields(Partial)) |field, i| {
                     if (@typeInfo(field.field_type) == .Optional) {
                         written_fields.setValue(@as(usize, i), true);
                     }
@@ -175,7 +172,7 @@ pub fn CompoundSpec(comptime UsedSpec: type, comptime PartialSpec: type) type {
             // data starts out with optional fields set to null
             var data: UserType = comptime blk: {
                 var data: UserType = undefined;
-                inline for (meta.fields(PartialSpec)) |field| {
+                inline for (meta.fields(Partial)) |field| {
                     if (@typeInfo(field.field_type) == .Optional) {
                         @field(data, field.name) = null;
                     }
@@ -185,7 +182,7 @@ pub fn CompoundSpec(comptime UsedSpec: type, comptime PartialSpec: type) type {
             // if we ever encounter an error, we need to deinitialize all written fields. we used optional_written_fields to find the fields we wrote to.
             // this is an inline for loop since we need to access Specs types
             errdefer {
-                inline for (meta.fields(PartialSpec)) |field, i| {
+                inline for (meta.fields(Partial)) |field, i| {
                     if (optional_written_fields.isSet(i)) {
                         const found_data = if (@typeInfo(field.field_type) == .Optional) @field(data, field.name).? else @field(data, field.name);
                         Specs[i].deinit(found_data, alloc);
@@ -213,7 +210,7 @@ pub fn CompoundSpec(comptime UsedSpec: type, comptime PartialSpec: type) type {
                 }
                 blk: {
                     // use inline for to find and use corresponding Specs type to deserialize
-                    inline for (meta.fields(PartialSpec)) |field, i| {
+                    inline for (meta.fields(Partial)) |field, i| {
                         if (i == field_ind) {
                             const res = Specs[i].deserialize(alloc, reader);
                             if (meta.isError(res)) _ = res catch |err| return err;
@@ -238,7 +235,7 @@ pub fn CompoundSpec(comptime UsedSpec: type, comptime PartialSpec: type) type {
             return data;
         }
         pub fn deinit(self: UserType, alloc: Allocator) void {
-            inline for (meta.fields(PartialSpec)) |field, i| {
+            inline for (meta.fields(Partial)) |field, i| {
                 if (@typeInfo(field.field_type) == .Optional) {
                     if (@field(self, field.name)) |found_data| {
                         Specs[i].deinit(found_data, alloc);
@@ -250,7 +247,7 @@ pub fn CompoundSpec(comptime UsedSpec: type, comptime PartialSpec: type) type {
         }
         pub fn size(self: UserType) usize {
             var total_size: usize = 1; // Tag.End
-            inline for (meta.fields(PartialSpec)) |field, i| {
+            inline for (meta.fields(Partial)) |field, i| {
                 const is_optional = @typeInfo(field.field_type) == .Optional;
                 const data = @field(self, field.name);
                 const found_data: if (is_optional) @TypeOf(data) else ?@TypeOf(data) = data;
@@ -294,7 +291,7 @@ pub const DynamicNbtItem = union(Tag) {
     ByteArray: []const i8,
     String: []const u8,
     List: []const DynamicNbtItem,
-    Compound: DynamicCompoundSpec.UserType,
+    Compound: DynamicCompound.UserType,
     IntArray: []const i32,
     LongArray: []const i64,
 
@@ -337,29 +334,29 @@ pub const DynamicNbtItem = union(Tag) {
                     try writer.writeIntBig(i64, b);
                 }
             },
-            .Compound => |d| try DynamicCompoundSpec.write(d, writer),
+            .Compound => |d| try DynamicCompound.write(d, writer),
         }
     }
     pub fn deserialize(alloc: Allocator, reader: anytype, tag: Tag) (meta.Child(@TypeOf(reader)).Error || Allocator.Error || error{EndOfStream} || CompoundError)!UserType {
         switch (tag) {
             .End => return DynamicNbtItem.End,
-            .Byte => return DynamicNbtItem{ .Byte = try NumSpec(i8).deserialize(alloc, reader) },
-            .Short => return DynamicNbtItem{ .Short = try NumSpec(i16).deserialize(alloc, reader) },
-            .Int => return DynamicNbtItem{ .Int = try NumSpec(i32).deserialize(alloc, reader) },
-            .Long => return DynamicNbtItem{ .Long = try NumSpec(i64).deserialize(alloc, reader) },
-            .Float => return DynamicNbtItem{ .Float = try NumSpec(f32).deserialize(alloc, reader) },
-            .Double => return DynamicNbtItem{ .Double = try NumSpec(f64).deserialize(alloc, reader) },
+            .Byte => return DynamicNbtItem{ .Byte = try Num(i8).deserialize(alloc, reader) },
+            .Short => return DynamicNbtItem{ .Short = try Num(i16).deserialize(alloc, reader) },
+            .Int => return DynamicNbtItem{ .Int = try Num(i32).deserialize(alloc, reader) },
+            .Long => return DynamicNbtItem{ .Long = try Num(i64).deserialize(alloc, reader) },
+            .Float => return DynamicNbtItem{ .Float = try Num(f32).deserialize(alloc, reader) },
+            .Double => return DynamicNbtItem{ .Double = try Num(f64).deserialize(alloc, reader) },
             .ByteArray => {
-                const len = @intCast(usize, try NumSpec(i32).deserialize(alloc, reader));
+                const len = @intCast(usize, try Num(i32).deserialize(alloc, reader));
                 var data = try alloc.alloc(i8, len);
                 errdefer alloc.free(data);
                 for (data) |*item| {
-                    item.* = try NumSpec(i8).deserialize(alloc, reader);
+                    item.* = try Num(i8).deserialize(alloc, reader);
                 }
                 return DynamicNbtItem{ .ByteArray = data };
             },
             .String => {
-                const len = @intCast(usize, try NumSpec(u16).deserialize(alloc, reader));
+                const len = @intCast(usize, try Num(u16).deserialize(alloc, reader));
                 var data = try alloc.alloc(u8, len);
                 errdefer alloc.free(data);
                 try reader.readNoEof(data);
@@ -367,7 +364,7 @@ pub const DynamicNbtItem = union(Tag) {
             },
             .List => {
                 const inner_tag = @intToEnum(Tag, try reader.readByte());
-                const len = @intCast(usize, try NumSpec(i32).deserialize(alloc, reader));
+                const len = @intCast(usize, try Num(i32).deserialize(alloc, reader));
                 var data = try alloc.alloc(DynamicNbtItem, len);
                 errdefer alloc.free(data);
                 for (data) |*item, i| {
@@ -382,24 +379,24 @@ pub const DynamicNbtItem = union(Tag) {
                 return DynamicNbtItem{ .List = data };
             },
             .IntArray => {
-                const len = @intCast(usize, try NumSpec(i32).deserialize(alloc, reader));
+                const len = @intCast(usize, try Num(i32).deserialize(alloc, reader));
                 var data = try alloc.alloc(i32, len);
                 errdefer alloc.free(data);
                 for (data) |*item| {
-                    item.* = try NumSpec(i32).deserialize(alloc, reader);
+                    item.* = try Num(i32).deserialize(alloc, reader);
                 }
                 return DynamicNbtItem{ .IntArray = data };
             },
             .LongArray => {
-                const len = @intCast(usize, try NumSpec(i32).deserialize(alloc, reader));
+                const len = @intCast(usize, try Num(i32).deserialize(alloc, reader));
                 var data = try alloc.alloc(i64, len);
                 errdefer alloc.free(data);
                 for (data) |*item| {
-                    item.* = try NumSpec(i64).deserialize(alloc, reader);
+                    item.* = try Num(i64).deserialize(alloc, reader);
                 }
                 return DynamicNbtItem{ .LongArray = data };
             },
-            .Compound => return DynamicNbtItem{ .Compound = try DynamicCompoundSpec.deserialize(alloc, reader) },
+            .Compound => return DynamicNbtItem{ .Compound = try DynamicCompound.deserialize(alloc, reader) },
         }
     }
     pub fn deinit(self: UserType, alloc: Allocator) void {
@@ -415,7 +412,7 @@ pub const DynamicNbtItem = union(Tag) {
             },
             .IntArray => |d| alloc.free(d),
             .LongArray => |d| alloc.free(d),
-            .Compound => |d| DynamicCompoundSpec.deinit(d, alloc),
+            .Compound => |d| DynamicCompound.deinit(d, alloc),
         }
     }
     pub fn size(self: UserType) usize {
@@ -480,7 +477,7 @@ test "dynamic nbt item" {
     try testing.expectEqual(@as(i16, 5), de_res.Compound[1].value.List[0].Short);
 }
 
-pub const DynamicCompoundSpec = struct {
+pub const DynamicCompound = struct {
     pub const UserType = []const TagDynNbtPair;
     pub fn write(self: UserType, writer: anytype) !void {
         for (self) |pair| {
@@ -540,20 +537,20 @@ pub const DynamicCompoundSpec = struct {
     }
 };
 
-pub const NamedSpecError = error{
+pub const NamedError = error{
     IncorrectTag,
     IncorrectName,
 };
 
-pub fn NamedSpec(comptime T: type, comptime name: []const u8) type {
+pub fn Named(comptime T: type, comptime name: []const u8) type {
     return struct {
-        pub const SubSpec = T;
-        pub const UserType = T.UserType;
+        pub const SubType = NbtSpec.Spec(T);
+        pub const UserType = SubType.UserType;
         pub fn write(self: UserType, writer: anytype) !void {
-            if (T.getNbtType(self)) |tag| {
+            if (SubType.getNbtType(self)) |tag| {
                 try (NamedTag{ .tag = tag, .name = name }).write(writer);
             }
-            try T.write(self, writer);
+            try SubType.write(self, writer);
         }
         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
             const named_tag = try NamedTag.deserialize(alloc, reader);
@@ -561,9 +558,9 @@ pub fn NamedSpec(comptime T: type, comptime name: []const u8) type {
             if (!std.mem.eql(u8, named_tag.name, name)) {
                 return error.IncorrectName;
             }
-            const result = try T.deserialize(alloc, reader);
-            errdefer T.deinit(result, alloc);
-            if (T.getNbtType(result)) |tag| {
+            const result = try SubType.deserialize(alloc, reader);
+            errdefer SubType.deinit(result, alloc);
+            if (SubType.getNbtType(result)) |tag| {
                 if (named_tag.tag != tag) {
                     return error.IncorrectTag;
                 }
@@ -571,23 +568,23 @@ pub fn NamedSpec(comptime T: type, comptime name: []const u8) type {
             return result;
         }
         pub fn deinit(self: UserType, alloc: Allocator) void {
-            return T.deinit(self, alloc);
+            return SubType.deinit(self, alloc);
         }
         pub fn size(self: UserType) usize {
             var total_size: usize = 0;
-            if (T.getNbtType(self)) |tag| {
+            if (SubType.getNbtType(self)) |tag| {
                 total_size += (NamedTag{ .tag = tag, .name = name }).size();
             }
-            total_size += T.size(self);
+            total_size += SubType.size(self);
             return total_size;
         }
         pub fn getNbtType(self: UserType) ?Tag {
-            return T.getNbtType(self);
+            return SubType.getNbtType(self);
         }
     };
 }
 
-pub fn NbtTypeWrapperSpec(comptime T: type, comptime tag: ?Tag) type {
+pub fn NbtWrapper(comptime T: type, comptime tag: ?Tag) type {
     return struct {
         pub const UserType = T.UserType;
         pub fn write(self: UserType, writer: anytype) !void {
@@ -613,11 +610,11 @@ pub const ListSpecError = error{
     IncorrectTag,
 };
 
-pub fn ListSpec(comptime UsedSpec: type, comptime T: type) type {
+pub fn List(comptime UsedSpec: type, comptime T: type) type {
     const tag = tagFromType(T);
     return struct {
         const ElemType = UsedSpec.Spec(T);
-        const ListType = serde.PrefixedArray(UsedSpec, serde.NumSpec(i32, .Big), ElemType);
+        const ListType = serde.PrefixedArray(UsedSpec, serde.Num(i32, .Big), ElemType);
         pub const UserType = ListType.UserType;
         pub fn write(self: UserType, writer: anytype) !void {
             try writer.writeByte(@enumToInt(tag));
@@ -682,47 +679,47 @@ pub fn tagFromType(comptime T: type) Tag {
     }
 }
 
-pub fn NumSpec(comptime T: type) type {
-    return NbtTypeWrapperSpec(serde.NumSpec(T, .Big), tagFromType(T));
+pub fn Num(comptime T: type) type {
+    return NbtWrapper(serde.Num(T, .Big), tagFromType(T));
 }
-pub const VoidSpec = NbtTypeWrapperSpec(serde.VoidSpec, null);
-pub const BoolSpec = NbtTypeWrapperSpec(serde.BoolSpec, .Byte);
-pub const StringSpec = NbtTypeWrapperSpec(serde.PrefixedArray(serde.DefaultSpec, u16, u8), .String);
-pub fn SpecificListSpec(comptime PartialSpec: type) type {
-    const info = @typeInfo(PartialSpec).Pointer;
-    return NbtTypeWrapperSpec(serde.PrefixedArray(NbtSpec, serde.NumSpec(i32, .Big), info.child), tagFromType(PartialSpec));
+pub const Void = NbtWrapper(serde.Void, null);
+pub const Bool = NbtWrapper(serde.Bool, .Byte);
+pub const String = NbtWrapper(serde.PrefixedArray(serde.DefaultSpec, u16, u8), .String);
+pub fn SpecificList(comptime Partial: type) type {
+    const info = @typeInfo(Partial).Pointer;
+    return NbtWrapper(serde.PrefixedArray(NbtSpec, serde.Num(i32, .Big), info.child), tagFromType(Partial));
 }
 
 pub const NbtSpec = struct {
-    pub fn Spec(comptime PartialSpec: type) type {
-        if (serde.isSerializable(PartialSpec)) {
-            if (isNbtSerializable(PartialSpec)) {
-                return PartialSpec;
+    pub fn Spec(comptime Partial: type) type {
+        if (serde.isSerializable(Partial)) {
+            if (isNbtSerializable(Partial)) {
+                return Partial;
             } else {
-                return NbtTypeWrapperSpec(PartialSpec, null);
+                return NbtWrapper(Partial, null);
             }
         }
-        switch (@typeInfo(PartialSpec)) {
-            .Void => return VoidSpec,
-            .Struct => return CompoundSpec(@This(), PartialSpec),
-            .Bool => return BoolSpec,
+        switch (@typeInfo(Partial)) {
+            .Void => return Void,
+            .Struct => return Compound(@This(), Partial),
+            .Bool => return Bool,
             .Int => |info| {
                 assert(info.signedness == .signed);
-                return NumSpec(PartialSpec);
+                return Num(Partial);
             },
-            .Float => return NumSpec(PartialSpec),
+            .Float => return Num(Partial),
             .Pointer => |info| {
                 assert(info.size == .Slice);
-                if (meta.trait.isZigString(PartialSpec)) {
-                    return StringSpec;
+                if (meta.trait.isZigString(Partial)) {
+                    return String;
                 }
                 const child_info = @typeInfo(info.child);
                 if (child_info == .Int and child_info.Int.bits != 16) {
-                    return SpecificListSpec(PartialSpec);
+                    return SpecificList(Partial);
                 }
-                return ListSpec(@This(), info.child);
+                return List(@This(), info.child);
             },
-            else => @compileError("dont know how to nbt spec " ++ @typeName(PartialSpec)),
+            else => @compileError("dont know how to nbt spec " ++ @typeName(Partial)),
         }
     }
 };
@@ -732,7 +729,7 @@ pub fn isNbtSerializable(comptime T: type) bool {
 }
 
 test "test.nbt" {
-    const DataType = NamedSpec(NbtSpec.Spec(struct {
+    const DataType = Named(NbtSpec.Spec(struct {
         name: []const u8,
     }), "hello world");
     const data = DataType.UserType{ .name = "Bananrama" };
@@ -750,7 +747,7 @@ test "test.nbt" {
 }
 
 test "bigtest.nbt" {
-    const DataType = NamedSpec(NbtSpec.Spec(struct {
+    const DataType = Named(NbtSpec.Spec(struct {
         @"nested compound test": struct {
             egg: struct {
                 name: []const u8,
@@ -764,7 +761,7 @@ test "bigtest.nbt" {
         intTest: i32,
         byteTest: i8,
         stringTest: []const u8,
-        @"listTest (long)": ListSpec(NbtSpec, i64),
+        @"listTest (long)": List(NbtSpec, i64),
         // cant do []i64 cause itll autodetect as LongArray
         doubleTest: f64,
         floatTest: f32,
@@ -816,7 +813,7 @@ test "optional compound fields" {
         id: ?i16,
         alive: bool,
     };
-    const DataType = NamedSpec(NbtSpec.Spec([]SubType), "test");
+    const DataType = Named(NbtSpec.Spec([]SubType), "test");
     const data: DataType.UserType = &.{
         .{ .name = null, .id = null, .alive = true },
         .{ .name = "hi", .id = 5, .alive = false },

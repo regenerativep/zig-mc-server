@@ -54,57 +54,33 @@ pub fn handleLogin(alloc: Allocator, cl: anytype) !void {
     }
     const username = login_start_packet.LoginStart;
     std.log.info("\"{s}\" trying to connect", .{username});
-    //try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .Disconnect = "{\"text\":\"your not allowed lol\"}" });
     const uuid = try mcp.uuidFromUsername(username);
     try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .LoginSuccess = .{ .username = username, .uuid = uuid } });
     // play state now
-    // [x] - join game
-    // [x] - server brand
-    // [x] - server difficulty
-    // [x] - player abilities
-    // [~] - client brand
-    // [~] - client settings
-    // [x] - held item change
-    // [x] - declare recipes
-    // [x] - tags
-    // [x] - entity status
-    // [ ] - declare commands
-    // [ ] - unlock recipes
-    // [x] - position and look
-    // [x] - add player
-    // [x] - update latency
-    // [x] - update view
-    // [?] - update light
-    // [x] - chunk data
-    // [x] - world border
-    // [x] - spawn position
-    // [x] - position and look
-    // [x] - teleport confirm
-    // [x] - position and look
-    // [ ] - ...
-    const default_dimension_codec = mcp.default_dimension_codec();
     const dimension_names = [_][]const u8{
         "minecraft:overworld",
     };
     const eid: i32 = 1;
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .JoinGame = .{
-        .entity_id = eid,
-        .is_hardcore = false,
-        .gamemode = .Creative,
-        .previous_gamemode = .None,
-        .dimension_names = std.mem.span(&dimension_names),
-        .dimension_codec = default_dimension_codec,
-        .dimension = default_dimension_codec.@"minecraft:dimension_type".value[0].element,
-        .dimension_name = "minecraft:overworld",
-        .hashed_seed = 1,
-        .max_players = 69,
-        .view_distance = 12,
-        .simulation_distance = 12,
-        .reduced_debug_info = false,
-        .enable_respawn_screen = false,
-        .is_debug = false,
-        .is_flat = true,
-    } });
+    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{
+        .JoinGame = .{
+            .entity_id = eid,
+            .is_hardcore = false,
+            .gamemode = .Creative,
+            .previous_gamemode = .None,
+            .dimension_names = std.mem.span(&dimension_names),
+            .dimension_codec = mcp.DEFUALT_DIMENSION_CODEC,
+            .dimension = mcp.DEFAULT_DIMENSION_TYPE_ELEMENT, //default_dimension_codec.@"minecraft:dimension_type".value[0].element,
+            .dimension_name = "minecraft:overworld",
+            .hashed_seed = 1,
+            .max_players = 69,
+            .view_distance = 12,
+            .simulation_distance = 12,
+            .reduced_debug_info = false,
+            .enable_respawn_screen = false,
+            .is_debug = false,
+            .is_flat = true,
+        },
+    });
     std.log.info("sent join game", .{});
     try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .PluginMessage = .{
         .channel = "minecraft:brand",
@@ -173,7 +149,7 @@ pub fn handleLogin(alloc: Allocator, cl: anytype) !void {
         },
     } });
     //try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{
-    //    .Tags = &[_]meta.Child(mcp.TagsSpec.UserType){
+    //    .Tags = &[_]meta.Child(mcp.Tags.UserType){
     //        .{
     //            .tag_type = "minecraft:block",
     //            .tags = &[_]mcp.TagEntries.UserType{.{
@@ -219,7 +195,7 @@ pub fn handleLogin(alloc: Allocator, cl: anytype) !void {
     } };
     try cl.writePacket(mcp.P.CB, pos_and_look);
     try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .PlayerInfo = .{
-        .AddPlayer = &[_]meta.Child(mcp.PlayerInfoSpec.UnionType.Specs[0].UserType){
+        .AddPlayer = &[_]meta.Child(mcp.PlayerInfo.UnionType.Specs[0].UserType){
             .{
                 .uuid = uuid,
                 .data = .{
@@ -233,7 +209,7 @@ pub fn handleLogin(alloc: Allocator, cl: anytype) !void {
         },
     } });
     try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .PlayerInfo = .{
-        .UpdateLatency = &[_]meta.Child(mcp.PlayerInfoSpec.UnionType.Specs[2].UserType){
+        .UpdateLatency = &[_]meta.Child(mcp.PlayerInfo.UnionType.Specs[2].UserType){
             .{
                 .uuid = uuid,
                 .data = 0,
@@ -290,7 +266,7 @@ pub fn handleLogin(alloc: Allocator, cl: anytype) !void {
                 .MOTION_BLOCKING = longs,
                 .WORLD_SURFACE = null,
             },
-            .data = &([_]mcp.ChunkSectionSpec.UserType{
+            .data = &([_]mcp.ChunkSection.UserType{
                 .{
                     .block_count = 4096,
                     .block_states = .{
@@ -304,7 +280,7 @@ pub fn handleLogin(alloc: Allocator, cl: anytype) !void {
                         .data_array = &[_]mcp.GlobalPaletteInt{},
                     },
                 },
-            } ++ [_]mcp.ChunkSectionSpec.UserType{
+            } ++ [_]mcp.ChunkSection.UserType{
                 .{
                     .block_count = 0,
                     .block_states = .{
@@ -383,16 +359,16 @@ pub fn handleClient(alloc: Allocator, conn: net.StreamServer.Connection) !void {
         std.log.info("legacy ping...", .{});
         return;
     }
-    if (handshake_packet.Handshake.next_state == .Status) {
-        return handleStatus(alloc, &cl);
-    } else { // if(handshake_packet.Handshake.next_state == .Login) {
-        return handleLogin(alloc, &cl);
+    switch (handshake_packet.Handshake.next_state) {
+        .Status => try handleStatus(alloc, &cl),
+        .Login => {
+            if (handshake_packet.Handshake.protocol_version != @as(i32, mcp.PROTOCOL_VERSION)) {
+                try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .Disconnect = "{\"text\":\"Incorrect protocol version; this server is on " ++ std.fmt.comptimePrint("{}", .{mcp.PROTOCOL_VERSION}) ++ ".\"}" });
+            } else {
+                try handleLogin(alloc, &cl);
+            }
+        },
     }
-
-    //switch (handshake_packet.Handshake.next_state) {
-    //    .Status => try handleStatus(alloc, &cl),
-    //    .Login => try handleLogin(alloc, &cl),
-    //}
 }
 
 pub fn main() anyerror!void {

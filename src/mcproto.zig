@@ -11,6 +11,8 @@ const serde = @import("serde.zig");
 const nbt = @import("nbt.zig");
 const VarNum = @import("varnum.zig").VarNum;
 
+pub const PROTOCOL_VERSION = 757;
+
 pub const VarInt = VarNum(i32);
 pub const VarLong = VarNum(i64);
 
@@ -60,7 +62,7 @@ pub fn PStringMax(comptime max_len_opt: ?usize) type {
 pub const PString = PStringMax(null);
 pub const Identifier = PStringMax(32767);
 
-pub const UuidSpec = struct {
+pub const UuidS = struct {
     pub const UserType = Uuid;
     pub fn write(self: UserType, writer: anytype) !void {
         try writer.writeAll(&self.bytes);
@@ -92,6 +94,24 @@ pub fn uuidFromUsername(username: []const u8) !Uuid {
     return uuid;
 }
 
+pub const DimensionCodecDimensionTypeElement = struct {
+    piglin_safe: bool,
+    natural: bool,
+    ambient_light: f32,
+    fixed_time: ?i64 = null,
+    infiniburn: []const u8,
+    respawn_anchor_works: bool,
+    has_skylight: bool,
+    bed_works: bool,
+    effects: []const u8,
+    has_raids: bool,
+    min_y: i32,
+    height: i32,
+    logical_height: i32,
+    coordinate_scale: f32,
+    ultrawarm: bool,
+    has_ceiling: bool,
+};
 pub const DimensionCodec = struct {
     @"minecraft:dimension_type": struct { @"type": []const u8 = "minecraft:dimension_type", value: []DimensionType },
     @"minecraft:worldgen/biome": struct {
@@ -101,26 +121,7 @@ pub const DimensionCodec = struct {
     pub const DimensionType = struct {
         name: []const u8,
         id: i32,
-        element: Element,
-
-        pub const Element = struct {
-            piglin_safe: bool,
-            natural: bool,
-            ambient_light: f32,
-            fixed_time: ?i64 = null,
-            infiniburn: []const u8,
-            respawn_anchor_works: bool,
-            has_skylight: bool,
-            bed_works: bool,
-            effects: []const u8,
-            has_raids: bool,
-            min_y: i32,
-            height: i32,
-            logical_height: i32,
-            coordinate_scale: f32,
-            ultrawarm: bool,
-            has_ceiling: bool,
-        };
+        element: DimensionCodecDimensionTypeElement,
     };
     pub const Biome = struct {
         name: []const u8,
@@ -173,80 +174,96 @@ pub const DimensionCodec = struct {
         };
     };
 };
-pub fn default_dimension_codec() DimensionCodecSpec.UserType {
-    return .{
-        .@"minecraft:dimension_type" = .{
-            .@"type" = "minecraft:dimension_type",
-            .value = &[_]meta.Child(DimensionCodecSpec.Specs[0].Specs[1].UserType){
-                .{
-                    .name = "minecraft:overworld",
-                    .id = 0,
-                    .element = .{
-                        .piglin_safe = false,
-                        .natural = true,
-                        .ambient_light = 0.0,
-                        .infiniburn = "minecraft:infiniburn_overworld",
-                        .respawn_anchor_works = false,
-                        .has_skylight = true,
-                        .bed_works = true,
-                        .effects = "minecraft:overworld",
-                        .has_raids = true,
-                        .min_y = 0,
-                        .height = 256,
-                        .logical_height = 256,
-                        .coordinate_scale = 1.0,
-                        .ultrawarm = false,
-                        .has_ceiling = false,
-                        .fixed_time = null,
-                    },
+pub const DEFAULT_DIMENSION_TYPE_ELEMENT: DimensionCodecTypeElementS.UserType = .{
+    .piglin_safe = false,
+    .natural = true,
+    .ambient_light = 0.0,
+    .infiniburn = "minecraft:infiniburn_overworld",
+    .respawn_anchor_works = false,
+    .has_skylight = true,
+    .bed_works = true,
+    .effects = "minecraft:overworld",
+    .has_raids = true,
+    .min_y = 0,
+    .height = 256,
+    .logical_height = 256,
+    .coordinate_scale = 1.0,
+    .ultrawarm = false,
+    .has_ceiling = false,
+    .fixed_time = null,
+};
+pub const DEFUALT_DIMENSION_CODEC: DimensionCodecS.UserType = .{
+    .@"minecraft:dimension_type" = .{
+        .@"type" = "minecraft:dimension_type",
+        .value = &[_]meta.Child(DimensionCodecS.Specs[0].Specs[1].UserType){
+            .{
+                .name = "minecraft:overworld",
+                .id = 0,
+                .element = .{
+                    .piglin_safe = false,
+                    .natural = true,
+                    .ambient_light = 0.0,
+                    .infiniburn = "minecraft:infiniburn_overworld",
+                    .respawn_anchor_works = false,
+                    .has_skylight = true,
+                    .bed_works = true,
+                    .effects = "minecraft:overworld",
+                    .has_raids = true,
+                    .min_y = 0,
+                    .height = 256,
+                    .logical_height = 256,
+                    .coordinate_scale = 1.0,
+                    .ultrawarm = false,
+                    .has_ceiling = false,
+                    .fixed_time = null,
                 },
             },
         },
-        .@"minecraft:worldgen/biome" = .{
-            .@"type" = "minecraft:worldgen/biome",
-            .value = &[_]meta.Child(DimensionCodecSpec.Specs[1].Specs[1].UserType){
-                .{
-                    .name = "minecraft:plains",
-                    .id = 1,
-                    .element = .{
-                        .precipitation = "rain",
-                        .effects = .{
-                            .sky_color = 0x78A7FF,
-                            .water_fog_color = 0x050533,
-                            .fog_color = 0xC0D8FF,
-                            .water_color = 0x3F76E4,
-                            .mood_sound = .{
-                                .tick_delay = 6000,
-                                .offset = 2.0,
-                                .sound = "minecraft:ambient.cave",
-                                .block_search_extent = 8,
-                            },
-                            .foliage_color = null,
-                            .grass_color = null,
-                            .grass_color_modifier = null,
-                            .music = null,
-                            .ambient_sound = null,
-                            .additions_sound = null,
+    },
+    .@"minecraft:worldgen/biome" = .{
+        .@"type" = "minecraft:worldgen/biome",
+        .value = &[_]meta.Child(DimensionCodecS.Specs[1].Specs[1].UserType){
+            .{
+                .name = "minecraft:plains",
+                .id = 1,
+                .element = .{
+                    .precipitation = "rain",
+                    .effects = .{
+                        .sky_color = 0x78A7FF,
+                        .water_fog_color = 0x050533,
+                        .fog_color = 0xC0D8FF,
+                        .water_color = 0x3F76E4,
+                        .mood_sound = .{
+                            .tick_delay = 6000,
+                            .offset = 2.0,
+                            .sound = "minecraft:ambient.cave",
+                            .block_search_extent = 8,
                         },
-                        .depth = 0.125,
-                        .temperature = 0.8,
-                        .scale = 0.05,
-                        .downfall = 0.4,
-                        .category = "plains",
-                        .temperature_modifier = null,
-                        .particle = null,
+                        .foliage_color = null,
+                        .grass_color = null,
+                        .grass_color_modifier = null,
+                        .music = null,
+                        .ambient_sound = null,
+                        .additions_sound = null,
                     },
+                    .depth = 0.125,
+                    .temperature = 0.8,
+                    .scale = 0.05,
+                    .downfall = 0.4,
+                    .category = "plains",
+                    .temperature_modifier = null,
+                    .particle = null,
                 },
             },
         },
-    };
-}
+    },
+};
 
 pub const Slot = Ds.Spec(?SlotData);
 pub const SlotData = struct {
     item_id: VarInt,
     item_count: i8,
-    nbt: nbt.DynamicCompoundSpec,
+    nbt: nbt.DynamicCompound,
 };
 
 pub const Ingredient = serde.PrefixedArray(Ds, VarInt, Slot);
@@ -315,7 +332,7 @@ pub const Recipe = struct {
     recipe_id: Identifier.UserType,
     data: RecipeData.UserType,
 
-    pub const RecipeData = serde.UnionSpec(Ds, union(enum) {
+    pub const RecipeData = serde.Union(Ds, union(enum) {
         CraftingShapeless: struct {
             group: PString,
             ingredients: serde.PrefixedArray(Ds, VarInt, Ingredient),
@@ -452,8 +469,9 @@ pub const CommandNodeFlags = packed struct {
     has_suggestions_type: bool,
 };
 
-pub const DimensionCodecSpec = nbt.NbtSpec.Spec(DimensionCodec);
-pub const TagsSpec = serde.PrefixedArray(Ds, VarInt, struct {
+pub const DimensionCodecS = nbt.NbtSpec.Spec(DimensionCodec);
+pub const DimensionCodecTypeElementS = nbt.NbtSpec.Spec(DimensionCodecDimensionTypeElement);
+pub const Tags = serde.PrefixedArray(Ds, VarInt, struct {
     tag_type: Identifier,
     tags: serde.PrefixedArray(Ds, VarInt, TagEntries),
 });
@@ -461,7 +479,7 @@ pub const TagEntries = Ds.Spec(struct {
     tag_name: Identifier,
     entries: serde.PrefixedArray(Ds, VarInt, VarInt),
 });
-pub const PlayerInfoSpec = serde.TaggedUnionSpec(Ds, VarInt, union(PlayerInfoAction) {
+pub const PlayerInfo = serde.TaggedUnion(Ds, VarInt, union(PlayerInfoAction) {
     pub const PlayerInfoAction = enum(i32) {
         AddPlayer = 0,
         UpdateGamemode = 1,
@@ -482,7 +500,7 @@ pub const PlayerInfoSpec = serde.TaggedUnionSpec(Ds, VarInt, union(PlayerInfoAct
     RemovePlayer: PlayerInfoVariant(void),
     pub fn PlayerInfoVariant(comptime T: type) type {
         return serde.PrefixedArray(Ds, VarInt, struct {
-            uuid: UuidSpec,
+            uuid: UuidS,
             data: T,
         });
     }
@@ -499,7 +517,7 @@ pub const BlockEntity = Ds.Spec(struct {
     },
     z: i16,
     entity_type: VarInt,
-    data: nbt.DynamicCompoundSpec,
+    data: nbt.DynamicCompound,
 });
 
 pub const BitSet = struct {
@@ -649,13 +667,13 @@ pub fn compactedDataArraySize(comptime T: type, data: []T, bit_count: usize) usi
     return VarInt.size(@intCast(i32, long_count)) + @sizeOf(u64) * long_count;
 }
 
-pub fn PalettedContainerSpec(comptime which_palette: PaletteType) type {
+pub fn PalettedContainer(comptime which_palette: PaletteType) type {
     return struct {
         bits_per_entry: u8,
         palette: Palette.UserType,
         data_array: []GlobalPaletteInt,
 
-        pub const Palette = serde.UnionSpec(Ds, union(enum) {
+        pub const Palette = serde.Union(Ds, union(enum) {
             Single: VarInt,
             Indirect: serde.PrefixedArray(Ds, VarInt, VarInt),
             Direct: void,
@@ -730,15 +748,15 @@ pub fn PalettedContainerSpec(comptime which_palette: PaletteType) type {
     };
 }
 
-pub const ChunkSectionSpec = Ds.Spec(struct {
+pub const ChunkSection = Ds.Spec(struct {
     block_count: i16,
-    block_states: PalettedContainerSpec(.Block),
-    biomes: PalettedContainerSpec(.Biome),
+    block_states: PalettedContainer(.Block),
+    biomes: PalettedContainer(.Biome),
 });
 
 pub const Ds = serde.DefaultSpec;
 pub const H = struct {
-    pub const SB = serde.TaggedUnionSpec(Ds, VarInt, union(PacketIds) {
+    pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             Handshake = 0x00,
             Legacy = 0xFE,
@@ -747,7 +765,7 @@ pub const H = struct {
             protocol_version: VarInt,
             server_address: PStringMax(255),
             server_port: u16,
-            next_state: serde.EnumSpec(Ds, VarInt, NextState),
+            next_state: serde.Enum(Ds, VarInt, NextState),
         },
         Legacy: void,
 
@@ -758,7 +776,7 @@ pub const H = struct {
     });
 };
 pub const S = struct {
-    pub const SB = serde.TaggedUnionSpec(Ds, VarInt, union(PacketIds) {
+    pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             Request = 0x00,
             Ping = 0x01,
@@ -766,7 +784,7 @@ pub const S = struct {
         Request: void,
         Ping: i64,
     });
-    pub const CB = serde.TaggedUnionSpec(Ds, VarInt, union(PacketIds) {
+    pub const CB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             Response = 0x00,
             Pong = 0x01,
@@ -776,7 +794,7 @@ pub const S = struct {
     });
 };
 pub const L = struct {
-    pub const SB = serde.TaggedUnionSpec(Ds, VarInt, union(PacketIds) {
+    pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             LoginStart = 0x00,
             EncryptionResponse = 0x01,
@@ -792,7 +810,7 @@ pub const L = struct {
             data: ?serde.Remaining,
         },
     });
-    pub const CB = serde.TaggedUnionSpec(Ds, VarInt, union(PacketIds) {
+    pub const CB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             Disconnect = 0x00,
             EncryptionRequest = 0x01,
@@ -807,7 +825,7 @@ pub const L = struct {
             verify_token: serde.PrefixedArray(Ds, VarInt, u8),
         },
         LoginSuccess: struct {
-            uuid: UuidSpec,
+            uuid: UuidS,
             username: PStringMax(16),
         },
         SetCompression: VarInt,
@@ -820,7 +838,7 @@ pub const L = struct {
 };
 
 pub const P = struct {
-    pub const SB = serde.TaggedUnionSpec(Ds, VarInt, union(PacketIds) {
+    pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             TeleportConfirm = 0x00,
             ClientStatus = 0x04,
@@ -829,14 +847,14 @@ pub const P = struct {
             PlayerPositionAndRotation = 0x12,
         };
         TeleportConfirm: VarInt,
-        ClientStatus: serde.EnumSpec(Ds, VarInt, ClientStatus),
+        ClientStatus: serde.Enum(Ds, VarInt, ClientStatus),
         ClientSettings: struct {
             locale: PStringMax(16),
             view_distance: i8,
-            chat_mode: serde.EnumSpec(Ds, VarInt, ChatMode),
+            chat_mode: serde.Enum(Ds, VarInt, ChatMode),
             chat_colors: bool,
             displayed_skin_parts: DisplayedSkinParts,
-            main_hand: serde.EnumSpec(Ds, VarInt, MainHand),
+            main_hand: serde.Enum(Ds, VarInt, MainHand),
             enable_text_filtering: bool,
             allow_server_listings: bool,
         },
@@ -853,7 +871,7 @@ pub const P = struct {
             on_ground: bool,
         },
     });
-    pub const CB = serde.TaggedUnionSpec(Ds, VarInt, union(PacketIds) {
+    pub const CB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             ServerDifficulty = 0x0E,
             DeclareCommands = 0x12,
@@ -895,11 +913,11 @@ pub const P = struct {
         ChunkDataAndUpdateLight: struct {
             chunk_x: i32,
             chunk_z: i32,
-            heightmaps: nbt.NamedSpec(nbt.NbtSpec.Spec(struct {
+            heightmaps: nbt.Named(struct {
                 MOTION_BLOCKING: []i64,
                 WORLD_SURFACE: ?[]i64,
-            }), ""),
-            data: serde.SizePrefixedArray(Ds, VarInt, ChunkSectionSpec),
+            }, ""),
+            data: serde.SizePrefixedArray(Ds, VarInt, ChunkSection),
             block_entities: serde.PrefixedArray(Ds, VarInt, BlockEntity),
             trust_edges: bool,
             sky_light_mask: BitSet,
@@ -915,8 +933,8 @@ pub const P = struct {
             gamemode: Gamemode,
             previous_gamemode: PreviousGamemode,
             dimension_names: serde.PrefixedArray(Ds, VarInt, PString),
-            dimension_codec: nbt.NamedSpec(DimensionCodecSpec, ""),
-            dimension: nbt.NamedSpec(nbt.NbtSpec.Spec(DimensionCodec.DimensionType.Element), ""),
+            dimension_codec: nbt.Named(DimensionCodecS, ""),
+            dimension: nbt.Named(DimensionCodecTypeElementS, ""),
             dimension_name: Identifier,
             hashed_seed: i64,
             max_players: VarInt,
@@ -937,7 +955,7 @@ pub const P = struct {
             flying_speed: f32,
             field_of_view_modifier: f32,
         },
-        PlayerInfo: PlayerInfoSpec,
+        PlayerInfo: PlayerInfo,
         PlayerPositionAndLook: struct {
             x: f64,
             y: f64,
@@ -954,7 +972,7 @@ pub const P = struct {
             teleport_id: VarInt,
             dismount_vehicle: bool,
         },
-        UnlockRecipes: serde.TaggedUnionSpec(Ds, VarInt, union(UnlockRecipesAction) {
+        UnlockRecipes: serde.TaggedUnion(Ds, VarInt, union(UnlockRecipesAction) {
             pub const UnlockRecipesAction = enum(i32) {
                 Init = 0,
                 Add = 1,
@@ -1000,7 +1018,7 @@ pub const P = struct {
             angle: f32,
         },
         DeclareRecipes: serde.PrefixedArray(Ds, VarInt, Recipe),
-        Tags: TagsSpec,
+        Tags: Tags,
     });
 };
 
