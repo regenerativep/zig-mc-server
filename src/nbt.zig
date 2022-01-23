@@ -296,7 +296,7 @@ pub const DynamicNbtItem = union(Tag) {
     LongArray: []const i64,
 
     pub const UserType = @This();
-    pub fn write(self: UserType, writer: anytype) meta.Child(@TypeOf(writer)).Error!void {
+    pub fn write(self: UserType, writer: anytype) @TypeOf(writer).Error!void {
         switch (self) {
             .End => {},
             .Byte => |d| try writer.writeIntBig(i8, d),
@@ -337,7 +337,7 @@ pub const DynamicNbtItem = union(Tag) {
             .Compound => |d| try DynamicCompound.write(d, writer),
         }
     }
-    pub fn deserialize(alloc: Allocator, reader: anytype, tag: Tag) (meta.Child(@TypeOf(reader)).Error || Allocator.Error || error{EndOfStream} || CompoundError)!UserType {
+    pub fn deserialize(alloc: Allocator, reader: anytype, tag: Tag) (@TypeOf(reader).Error || Allocator.Error || error{EndOfStream} || CompoundError)!UserType {
         switch (tag) {
             .End => return DynamicNbtItem.End,
             .Byte => return DynamicNbtItem{ .Byte = try Num(i8).deserialize(alloc, reader) },

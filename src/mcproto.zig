@@ -4,6 +4,7 @@ const meta = std.meta;
 const unicode = std.unicode;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+const math = std.math;
 
 const Uuid = @import("uuid6");
 
@@ -61,6 +62,13 @@ pub fn PStringMax(comptime max_len_opt: ?usize) type {
 
 pub const PString = PStringMax(null);
 pub const Identifier = PStringMax(32767);
+
+pub fn intoAngle(val: f32) u8 {
+    var new_val: isize = @floatToInt(isize, (val / 360.0) * 256.0);
+    while (new_val < 0) new_val += 256;
+    while (new_val >= 256) new_val -= 256;
+    return @intCast(u8, new_val);
+}
 
 pub const UuidS = struct {
     pub const UserType = Uuid;
@@ -333,41 +341,41 @@ pub const Recipe = struct {
     data: RecipeData.UserType,
 
     pub const RecipeData = serde.Union(Ds, union(enum) {
-        CraftingShapeless: struct {
+        crafting_shapeless: struct {
             group: PString,
             ingredients: serde.PrefixedArray(Ds, VarInt, Ingredient),
             result: Slot,
         },
-        CraftingShaped: CraftingShaped,
-        CraftingSpecialArmorDye: void,
-        CraftingSpecialBookCloning: void,
-        CraftingSpecialMapCloning: void,
-        CraftingSpecialMapExtending: void,
-        CraftingSpecialFireworkRocket: void,
-        CraftingSpecialFireworkStar: void,
-        CraftingSpecialFireworkStarFade: void,
-        CraftingSpecialRepairItem: void,
-        CraftingSpecialTippedArrow: void,
-        CraftingSpecialBannedDuplicate: void,
-        CraftingSpecialBannerAddPattern: void,
-        CraftingSpecialShieldDecoration: void,
-        CraftingSpecialShulkerBoxColoring: void,
-        CraftingSpecialSuspiciousStew: void,
-        Smelting: Smelting,
-        Blasting: Smelting,
-        Smoking: Smelting,
-        CampfireCooking: Smelting,
-        Stonecutting: struct {
+        crafting_shaped: CraftingShaped,
+        crafting_special_armor_dye: void,
+        crafting_special_book_cloning: void,
+        crafting_special_map_cloning: void,
+        crafting_special_map_extending: void,
+        crafting_special_firework_rocket: void,
+        crafting_special_firework_star: void,
+        crafting_special_firework_star_fade: void,
+        crafting_special_repair_item: void,
+        crafting_special_tipped_arrow: void,
+        crafting_special_banned_duplicate: void,
+        crafting_special_banner_add_pattern: void,
+        crafting_special_shield_decoration: void,
+        crafting_special_shulker_box_coloring: void,
+        crafting_special_suspicious_stew: void,
+        smelting: Smelting,
+        blasting: Smelting,
+        smoking: Smelting,
+        campfire_cooking: Smelting,
+        stonecutting: struct {
             group: PString,
             ingredient: Ingredient,
             result: Slot,
         },
-        Smithing: struct {
+        smithing: struct {
             base: Ingredient,
             addition: Ingredient,
             result: Slot,
         },
-        None: void,
+        none: void,
 
         pub const Smelting = struct {
             group: PString,
@@ -378,29 +386,30 @@ pub const Recipe = struct {
         };
     });
 
+    // TODO since we're not using pascal case for the variant names here anymore, we could probably automate the string to enum conversion
     const IdentifierMap = std.ComptimeStringMap(meta.Tag(RecipeData.UserType), .{
-        .{ "crafting_shapeless", .CraftingShapeless },
-        .{ "crafting_shaped", .CraftingShaped },
-        .{ "crafting_special_armordye", .CraftingSpecialArmorDye },
-        .{ "crafting_special_bookcloning", .CraftingSpecialBookCloning },
-        .{ "crafting_special_mapcloning", .CraftingSpecialMapCloning },
-        .{ "crafting_special_mapextending", .CraftingSpecialMapExtending },
-        .{ "crafting_special_firework_rocket", .CraftingSpecialFireworkRocket },
-        .{ "crafting_special_firework_star", .CraftingSpecialFireworkStar },
-        .{ "crafting_special_firework_star_fade", .CraftingSpecialFireworkStarFade },
-        .{ "crafting_special_repairitem", .CraftingSpecialRepairItem },
-        .{ "crafting_special_tippedarrow", .CraftingSpecialTippedArrow },
-        .{ "crafting_special_bannerduplicate", .CraftingSpecialBannedDuplicate },
-        .{ "crafting_special_banneraddpattern", .CraftingSpecialBannerAddPattern },
-        .{ "crafting_special_shielddecoration", .CraftingSpecialShieldDecoration },
-        .{ "crafting_special_shulkerboxcoloring", .CraftingSpecialShulkerBoxColoring },
-        .{ "crafting_special_suspiciousstew", .CraftingSpecialSuspiciousStew },
-        .{ "smelting", .Smelting },
-        .{ "blasting", .Blasting },
-        .{ "smoking", .Smoking },
-        .{ "campfire_cooking", .CampfireCooking },
-        .{ "stonecutting", .Stonecutting },
-        .{ "smithing", .Smithing },
+        .{ "crafting_shapeless", .crafting_shapeless },
+        .{ "crafting_shaped", .crafting_shaped },
+        .{ "crafting_special_armordye", .crafting_special_armor_dye },
+        .{ "crafting_special_bookcloning", .crafting_special_book_cloning },
+        .{ "crafting_special_mapcloning", .crafting_special_map_cloning },
+        .{ "crafting_special_mapextending", .crafting_special_map_extending },
+        .{ "crafting_special_firework_rocket", .crafting_special_firework_rocket },
+        .{ "crafting_special_firework_star", .crafting_special_firework_star },
+        .{ "crafting_special_firework_star_fade", .crafting_special_firework_star_fade },
+        .{ "crafting_special_repairitem", .crafting_special_repair_item },
+        .{ "crafting_special_tippedarrow", .crafting_special_tipped_arrow },
+        .{ "crafting_special_bannerduplicate", .crafting_special_banned_duplicate },
+        .{ "crafting_special_banneraddpattern", .crafting_special_banner_add_pattern },
+        .{ "crafting_special_shielddecoration", .crafting_special_shield_decoration },
+        .{ "crafting_special_shulkerboxcoloring", .crafting_special_shulker_box_coloring },
+        .{ "crafting_special_suspiciousstew", .crafting_special_suspicious_stew },
+        .{ "smelting", .smelting },
+        .{ "blasting", .blasting },
+        .{ "smoking", .smoking },
+        .{ "campfire_cooking", .campfire_cooking },
+        .{ "stonecutting", .stonecutting },
+        .{ "smithing", .smithing },
     });
 
     pub const UserType = @This();
@@ -415,7 +424,7 @@ pub const Recipe = struct {
         errdefer Identifier.deinit(self.type, alloc);
         self.recipe_id = try Identifier.deserialize(alloc, reader);
         errdefer Identifier.deinit(self.recipe_id, alloc);
-        const tag: meta.Tag(RecipeData.UserType) = IdentifierMap.get(self.type) orelse .None;
+        const tag: meta.Tag(RecipeData.UserType) = IdentifierMap.get(self.type) orelse .none;
         self.data = try RecipeData.deserialize(alloc, reader, @enumToInt(tag));
         return self;
     }
@@ -481,23 +490,23 @@ pub const TagEntries = Ds.Spec(struct {
 });
 pub const PlayerInfo = serde.TaggedUnion(Ds, VarInt, union(PlayerInfoAction) {
     pub const PlayerInfoAction = enum(i32) {
-        AddPlayer = 0,
-        UpdateGamemode = 1,
-        UpdateLatency = 2,
-        UpdateDisplayName = 3,
-        RemovePlayer = 4,
+        add_player = 0,
+        update_gamemode = 1,
+        update_latency = 2,
+        update_display_name = 3,
+        remove_player = 4,
     };
-    AddPlayer: PlayerInfoVariant(struct {
+    add_player: PlayerInfoVariant(struct {
         name: PStringMax(16),
         properties: serde.PrefixedArray(Ds, VarInt, PlayerProperty),
         gamemode: Gamemode,
         ping: VarInt,
         display_name: ?PString,
     }),
-    UpdateGamemode: PlayerInfoVariant(Gamemode),
-    UpdateLatency: PlayerInfoVariant(VarInt),
-    UpdateDisplayName: PlayerInfoVariant(?PString),
-    RemovePlayer: PlayerInfoVariant(void),
+    update_gamemode: PlayerInfoVariant(Gamemode),
+    update_latency: PlayerInfoVariant(VarInt),
+    update_display_name: PlayerInfoVariant(?PString),
+    remove_player: PlayerInfoVariant(void),
     pub fn PlayerInfoVariant(comptime T: type) type {
         return serde.PrefixedArray(Ds, VarInt, struct {
             uuid: UuidS,
@@ -606,6 +615,10 @@ pub const MainHand = enum(i32) {
     Left = 0,
     Right = 1,
 };
+pub const Hand = enum(i32) {
+    Main = 0,
+    Off = 1,
+};
 pub const ClientStatus = enum(i32) {
     PerformRespawn = 0,
     RequestStats = 1,
@@ -674,9 +687,9 @@ pub fn PalettedContainer(comptime which_palette: PaletteType) type {
         data_array: []GlobalPaletteInt,
 
         pub const Palette = serde.Union(Ds, union(enum) {
-            Single: VarInt,
-            Indirect: serde.PrefixedArray(Ds, VarInt, VarInt),
-            Direct: void,
+            single: VarInt,
+            indirect: serde.PrefixedArray(Ds, VarInt, VarInt),
+            direct: void,
         });
         const max_bits = switch (which_palette) {
             .Block => meta.bitCount(GlobalPaletteInt),
@@ -711,15 +724,15 @@ pub fn PalettedContainer(comptime which_palette: PaletteType) type {
             switch (self.bits_per_entry) {
                 0 => {
                     actual_bits = 0;
-                    tag = .Single;
+                    tag = .single;
                 },
                 1...max_indirect_bits => |b| {
                     actual_bits = if (which_palette == .Block) (if (b < 4) 4 else b) else b;
-                    tag = .Indirect;
+                    tag = .indirect;
                 },
                 (max_indirect_bits + 1)...max_bits => {
                     actual_bits = max_bits;
-                    tag = .Direct;
+                    tag = .direct;
                 },
                 else => return error.InvalidBitCount,
             }
@@ -754,20 +767,50 @@ pub const ChunkSection = Ds.Spec(struct {
     biomes: PalettedContainer(.Biome),
 });
 
+pub const EntityActionId = enum(i32) {
+    StartSneaking = 0,
+    StopSneaking = 1,
+    LeaveBed = 2,
+    StartSprinting = 3,
+    StopSprinting = 4,
+    StartJumpWithHorse = 5,
+    StopJumpWithHorse = 6,
+    OpenHorseInventory = 7,
+    StartFlyingWithElytra = 8,
+};
+
+pub const PlayerDiggingStatus = enum(i32) {
+    Started = 0,
+    Cancelled = 1,
+    Finished = 2,
+    DropItemStack = 3,
+    DropItem = 4,
+    ShootArrowOrFinishEating = 5,
+    SwapItemInHand = 6,
+};
+pub const BlockFace = enum(u8) {
+    Bottom = 0,
+    Top = 1,
+    North = 2,
+    South = 3,
+    West = 4,
+    East = 5,
+};
+
 pub const Ds = serde.DefaultSpec;
 pub const H = struct {
     pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
-            Handshake = 0x00,
-            Legacy = 0xFE,
+            handshake = 0x00,
+            legacy = 0xFE,
         };
-        Handshake: struct {
+        handshake: struct {
             protocol_version: VarInt,
             server_address: PStringMax(255),
             server_port: u16,
             next_state: serde.Enum(Ds, VarInt, NextState),
         },
-        Legacy: void,
+        legacy: void,
 
         pub const NextState = enum(i32) {
             Status = 0x01,
@@ -778,58 +821,58 @@ pub const H = struct {
 pub const S = struct {
     pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
-            Request = 0x00,
-            Ping = 0x01,
+            request = 0x00,
+            ping = 0x01,
         };
-        Request: void,
-        Ping: i64,
+        request: void,
+        ping: i64,
     });
     pub const CB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
-            Response = 0x00,
-            Pong = 0x01,
+            response = 0x00,
+            pong = 0x01,
         };
-        Response: PStringMax(32767),
-        Pong: i64,
+        response: PStringMax(32767),
+        pong: i64,
     });
 };
 pub const L = struct {
     pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
-            LoginStart = 0x00,
-            EncryptionResponse = 0x01,
-            LoginPluginResponse = 0x02,
+            login_start = 0x00,
+            encryption_response = 0x01,
+            login_plugin_response = 0x02,
         };
-        LoginStart: PString,
-        EncryptionResponse: struct {
+        login_start: PString,
+        encryption_response: struct {
             shared_secret: serde.PrefixedArray(Ds, VarInt, u8),
             verify_token: serde.PrefixedArray(Ds, VarInt, u8),
         },
-        LoginPluginResponse: struct {
+        login_plugin_response: struct {
             message_id: VarInt,
             data: ?serde.Remaining,
         },
     });
     pub const CB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
-            Disconnect = 0x00,
-            EncryptionRequest = 0x01,
-            LoginSuccess = 0x02,
-            SetCompression = 0x03,
-            LoginPluginRequest = 0x04,
+            disconnect = 0x00,
+            encryption_request = 0x01,
+            login_success = 0x02,
+            set_compression = 0x03,
+            login_plugin_request = 0x04,
         };
-        Disconnect: PString,
-        EncryptionRequest: struct {
+        disconnect: PString,
+        encryption_request: struct {
             server_id: PStringMax(20),
             public_key: serde.PrefixedArray(Ds, VarInt, u8),
             verify_token: serde.PrefixedArray(Ds, VarInt, u8),
         },
-        LoginSuccess: struct {
+        login_success: struct {
             uuid: UuidS,
             username: PStringMax(16),
         },
-        SetCompression: VarInt,
-        LoginPluginRequest: struct {
+        set_compression: VarInt,
+        login_plugin_request: struct {
             message_id: VarInt,
             channel: Identifier,
             data: serde.Remaining,
@@ -840,15 +883,26 @@ pub const L = struct {
 pub const P = struct {
     pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
-            TeleportConfirm = 0x00,
-            ClientStatus = 0x04,
-            ClientSettings = 0x05,
-            PluginMessage = 0x0A,
-            PlayerPositionAndRotation = 0x12,
+            teleport_confirm = 0x00,
+            client_status = 0x04,
+            client_settings = 0x05,
+            close_window = 0x09,
+            plugin_message = 0x0A,
+            keep_alive = 0x0F,
+            player_position = 0x11,
+            player_position_and_rotation = 0x12,
+            player_rotation = 0x13,
+            player_movement = 0x14,
+            player_digging = 0x1A,
+            entity_action = 0x1B,
+            held_item_change = 0x25,
+            creative_inventory_action = 0x28,
+            animation = 0x2C,
+            player_block_placement = 0x2E,
         };
-        TeleportConfirm: VarInt,
-        ClientStatus: serde.Enum(Ds, VarInt, ClientStatus),
-        ClientSettings: struct {
+        teleport_confirm: VarInt,
+        client_status: serde.Enum(Ds, VarInt, ClientStatus),
+        client_settings: struct {
             locale: PStringMax(16),
             view_distance: i8,
             chat_mode: serde.Enum(Ds, VarInt, ChatMode),
@@ -858,11 +912,19 @@ pub const P = struct {
             enable_text_filtering: bool,
             allow_server_listings: bool,
         },
-        PluginMessage: struct {
+        close_window: u8,
+        plugin_message: struct {
             channel: Identifier,
             data: serde.Remaining,
         },
-        PlayerPositionAndRotation: struct {
+        keep_alive: i64,
+        player_position: struct {
+            x: f64,
+            y: f64,
+            z: f64,
+            on_ground: bool,
+        },
+        player_position_and_rotation: struct {
             x: f64,
             y: f64,
             z: f64,
@@ -870,47 +932,97 @@ pub const P = struct {
             pitch: f32,
             on_ground: bool,
         },
+        player_rotation: struct {
+            yaw: f32,
+            pitch: f32,
+            on_ground: bool,
+        },
+        player_movement: bool,
+        player_digging: struct {
+            status: serde.Enum(Ds, VarInt, PlayerDiggingStatus),
+            location: Position,
+            face: BlockFace,
+        },
+        entity_action: struct {
+            entity_id: VarInt,
+            action_id: serde.Enum(Ds, VarInt, EntityActionId),
+            jump_boost: VarInt,
+        },
+        held_item_change: i16,
+        creative_inventory_action: struct {
+            slot: i16,
+            clicked_item: Slot,
+        },
+        animation: serde.Enum(Ds, VarInt, Hand),
+        player_block_placement: struct {
+            hand: serde.Enum(Ds, VarInt, Hand),
+            location: Position,
+            face: BlockFace,
+            cursor_position_x: f32,
+            cursor_position_y: f32,
+            cursor_position_z: f32,
+            inside_block: bool,
+        },
     });
     pub const CB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
-            ServerDifficulty = 0x0E,
-            DeclareCommands = 0x12,
-            PluginMessage = 0x18,
-            EntityStatus = 0x1B,
-            ChunkDataAndUpdateLight = 0x22,
-            JoinGame = 0x26,
-            PlayerAbilities = 0x32,
-            PlayerInfo = 0x36,
-            PlayerPositionAndLook = 0x38,
-            UnlockRecipes = 0x39,
-            WorldBorderCenter = 0x42,
-            WorldBorderLerpSize = 0x43,
-            WorldBorderSize = 0x44,
-            WorldBorderWarningDelay = 0x45,
-            WorldBorderWarningReach = 0x46,
-            HeldItemChange = 0x48,
-            UpdateViewPosition = 0x49,
-            SpawnPosition = 0x4B,
-            DeclareRecipes = 0x66,
-            Tags = 0x67,
+            spawn_player = 0x04,
+            server_difficulty = 0x0E,
+            declare_commands = 0x12,
+            plugin_message = 0x18,
+            disconnect = 0x1A,
+            entity_status = 0x1B,
+            keep_alive = 0x21,
+            chunk_data_and_update_light = 0x22,
+            join_game = 0x26,
+            entity_position = 0x29,
+            entity_position_and_rotation = 0x2A,
+            entity_rotation = 0x2B,
+            player_abilities = 0x32,
+            player_info = 0x36,
+            player_position_and_look = 0x38,
+            unlock_recipes = 0x39,
+            entity_head_look = 0x3E,
+            world_border_center = 0x42,
+            world_border_lerp_size = 0x43,
+            world_border_size = 0x44,
+            world_border_warning_delay = 0x45,
+            world_border_warning_reach = 0x46,
+            held_item_change = 0x48,
+            update_view_position = 0x49,
+            entity_teleport = 0x62,
+            spawn_position = 0x4B,
+            declare_recipes = 0x66,
+            tags = 0x67,
         };
-        ServerDifficulty: struct {
+        spawn_player: struct {
+            entity_id: VarInt,
+            player_uuid: UuidS,
+            x: f64,
+            y: f64,
+            z: f64,
+            yaw: u8,
+            pitch: u8,
+        },
+        server_difficulty: struct {
             difficulty: Difficulty,
             difficulty_locked: bool,
         },
-        DeclareCommands: struct {
+        declare_commands: struct {
             nodes: serde.PrefixedArray(Ds, VarInt, CommandNode),
             root_index: VarInt,
         },
-        PluginMessage: struct {
+        plugin_message: struct {
             channel: Identifier,
             data: serde.Remaining,
         },
-        EntityStatus: struct {
+        disconnect: PString,
+        entity_status: struct {
             entity_id: i32,
             entity_status: i8,
         },
-        ChunkDataAndUpdateLight: struct {
+        keep_alive: i64,
+        chunk_data_and_update_light: struct {
             chunk_x: i32,
             chunk_z: i32,
             heightmaps: nbt.Named(struct {
@@ -927,7 +1039,7 @@ pub const P = struct {
             sky_light_arrays: serde.PrefixedArray(Ds, VarInt, serde.PrefixedArray(Ds, VarInt, u8)),
             block_light_arrays: serde.PrefixedArray(Ds, VarInt, serde.PrefixedArray(Ds, VarInt, u8)),
         },
-        JoinGame: struct {
+        join_game: struct {
             entity_id: i32,
             is_hardcore: bool,
             gamemode: Gamemode,
@@ -945,7 +1057,29 @@ pub const P = struct {
             is_debug: bool,
             is_flat: bool,
         },
-        PlayerAbilities: struct {
+        entity_position: struct {
+            entity_id: VarInt,
+            dx: i16,
+            dy: i16,
+            dz: i16,
+            on_ground: bool,
+        },
+        entity_position_and_rotation: struct {
+            entity_id: VarInt,
+            dx: i16,
+            dy: i16,
+            dz: i16,
+            yaw: u8,
+            pitch: u8,
+            on_ground: bool,
+        },
+        entity_rotation: struct {
+            entity_id: VarInt,
+            yaw: u8,
+            pitch: u8,
+            on_ground: bool,
+        },
+        player_abilities: struct {
             flags: packed struct {
                 invulnerable: bool,
                 flying: bool,
@@ -955,8 +1089,8 @@ pub const P = struct {
             flying_speed: f32,
             field_of_view_modifier: f32,
         },
-        PlayerInfo: PlayerInfo,
-        PlayerPositionAndLook: struct {
+        player_info: PlayerInfo,
+        player_position_and_look: struct {
             x: f64,
             y: f64,
             z: f64,
@@ -972,7 +1106,7 @@ pub const P = struct {
             teleport_id: VarInt,
             dismount_vehicle: bool,
         },
-        UnlockRecipes: serde.TaggedUnion(Ds, VarInt, union(UnlockRecipesAction) {
+        unlock_recipes: serde.TaggedUnion(Ds, VarInt, union(UnlockRecipesAction) {
             pub const UnlockRecipesAction = enum(i32) {
                 Init = 0,
                 Add = 1,
@@ -996,29 +1130,42 @@ pub const P = struct {
             Add: UnlockRecipesVariant(void),
             Remove: UnlockRecipesVariant(void),
         }),
-        WorldBorderCenter: struct {
+        entity_head_look: struct {
+            entity_id: VarInt,
+            yaw: u8,
+        },
+        world_border_center: struct {
             x: f64,
             z: f64,
         },
-        WorldBorderLerpSize: struct {
+        world_border_lerp_size: struct {
             old_diameter: f64,
             new_diameter: f64,
             speed: VarLong,
         },
-        WorldBorderSize: f64,
-        WorldBorderWarningDelay: VarInt,
-        WorldBorderWarningReach: VarInt,
-        HeldItemChange: i8,
-        UpdateViewPosition: struct {
+        world_border_size: f64,
+        world_border_warning_delay: VarInt,
+        world_border_warning_reach: VarInt,
+        held_item_change: i8,
+        update_view_position: struct {
             chunk_x: VarInt,
             chunk_z: VarInt,
         },
-        SpawnPosition: struct {
+        entity_teleport: struct {
+            entity_id: VarInt,
+            x: f64,
+            y: f64,
+            z: f64,
+            yaw: u8,
+            pitch: u8,
+            on_ground: bool,
+        },
+        spawn_position: struct {
             location: Position,
             angle: f32,
         },
-        DeclareRecipes: serde.PrefixedArray(Ds, VarInt, Recipe),
-        Tags: Tags,
+        declare_recipes: serde.PrefixedArray(Ds, VarInt, Recipe),
+        tags: Tags,
     });
 };
 
@@ -1037,7 +1184,7 @@ test "protocol" {
     const alloc = testing.allocator;
     var packet: P.SB.UserType = undefined;
     packet = try testPacket(P.SB, alloc, &[_]u8{ 0x0A, 2, 'h', 'i', 't', 'h', 'e', 'r', 'e' });
-    try testing.expectEqualStrings("hi", packet.PluginMessage.channel);
-    try testing.expectEqualSlices(u8, "there", packet.PluginMessage.data);
+    try testing.expectEqualStrings("hi", packet.plugin_message.channel);
+    try testing.expectEqualSlices(u8, "there", packet.plugin_message.data);
     P.SB.deinit(packet, alloc);
 }

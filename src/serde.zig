@@ -273,6 +273,7 @@ pub fn TaggedUnion(comptime UsedSpec: type, comptime PartialTag: type, comptime 
         }
         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
             const tag_int = try TagType.deserialize(alloc, reader);
+            errdefer std.log.err("tag value: 0x{X}", .{tag_int});
             return try UnionType.deserialize(alloc, reader, tag_int);
         }
         pub fn deinit(self: UserType, alloc: Allocator) void {

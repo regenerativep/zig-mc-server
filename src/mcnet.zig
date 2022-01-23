@@ -4,6 +4,7 @@ const Reader = std.io.Reader;
 const meta = std.meta;
 const Allocator = std.mem.Allocator;
 const deflate = std.compress.deflate;
+const io = std.io;
 
 const zlib = @import("zlib");
 const c = @cImport({
@@ -74,7 +75,7 @@ pub const ZlibCompressor = struct {
     pub fn WithWriter(comptime WriterType: type) type {
         return struct {
             const WriterError = zlib.Error || WriterType.Error;
-            const Writer = std.io.Writer(InnerSelf, WriterError, write);
+            const Writer = io.Writer(InnerSelf, WriterError, write);
             inner: WriterType,
             parent: *ZlibCompressor,
 
@@ -115,40 +116,44 @@ pub const ZlibCompressor = struct {
 
 pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, comptime compression_threshold: ?i32) type {
     return struct {
-        reader: ReaderType,
-        writer: WriterType,
+        pub const Threshold = compression_threshold;
+
+        connection: net.StreamServer.Connection,
+        reader: io.BufferedReader(1024, ReaderType),
+        writer: io.BufferedWriter(1024, WriterType),
 
         const Self = @This();
         pub fn readHandshakePacket(self: *Self, comptime PacketType: type, alloc: Allocator) !PacketType.UserType {
-            var len = try mcp.VarInt.deserialize(alloc, self.reader);
+            var len = try mcp.VarInt.deserialize(alloc, self.reader.reader());
             if (len == 0xFE) {
-                return PacketType.UserType.Legacy;
+                return PacketType.UserType.legacy;
             }
             return try self.readPacketLen(PacketType, alloc, @intCast(usize, len));
         }
         pub fn readPacket(self: *Self, comptime PacketType: type, alloc: Allocator) !PacketType.UserType {
-            var len = try mcp.VarInt.deserialize(alloc, self.reader);
+            var len = try mcp.VarInt.deserialize(alloc, self.reader.reader());
             return try self.readPacketLen(PacketType, alloc, @intCast(usize, len));
         }
         usingnamespace if (compression_threshold) |threshold| struct {
             pub fn readPacketLen(self: *Self, comptime PacketType: type, alloc: Allocator, len: usize) !PacketType.UserType {
-                var reader = std.io.limitedReader(self.reader, len);
-                const data_len = try mcp.VarInt.deserialize(alloc, self.reader);
+                var reader = io.limitedReader(self.reader.reader(), len);
+                const data_len = try mcp.VarInt.deserialize(alloc, reader.reader());
                 if (data_len == 0) {
-                    return try PacketType.deserialize(alloc, &reader.reader());
+                    return try PacketType.deserialize(alloc, reader.reader());
                 } else {
                     var decompressor = std.zlib.zlibStream(alloc, reader.reader());
                     defer decompressor.deinit();
-                    return try PacketType.deserialize(alloc, &decompressor.reader()); // TODO can these readers not be pointers?
+                    return try PacketType.deserialize(alloc, decompressor.reader()); // TODO can these readers not be pointers?
                 }
             }
 
             pub fn writePacket(self: *Self, comptime PacketType: type, packet: PacketType.UserType, compressor: *ZlibCompressor) !void {
                 const actual_len = @intCast(i32, PacketType.size(packet));
+                var buf_writer = self.writer.writer();
                 if (actual_len < compression_threshold) {
-                    try mcp.VarInt.write(actual_len, &self.writer);
-                    try self.writer.writeByte(0x00); // varint of 0
-                    try PacketType.write(packet, &self.writer);
+                    try mcp.VarInt.write(actual_len, buf_writer);
+                    try buf_writer.writeByte(0x00); // varint of 0
+                    try PacketType.write(packet, buf_writer);
                 } else {
                     // not sure if compression works and im not sure ill try for a while
 
@@ -158,12 +163,13 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
                     defer compressed_data.deinit();
                     defer compressor.reset();
                     var compressed_data_writer = compressed_data.writer();
-                    try PacketType.write(packet, &compressor.writer(compressed_data_writer));
-                    try mcp.VarInt.write(@intCast(i32, compressed_data.items.len + mcp.VarInt.size(actual_len)), &self.writer);
-                    try mcp.VarInt.write(actual_len, &self.writer);
+                    try PacketType.write(packet, compressor.writer(compressed_data_writer));
+                    try mcp.VarInt.write(@intCast(i32, compressed_data.items.len + mcp.VarInt.size(actual_len)), self.writer);
+                    try mcp.VarInt.write(actual_len, buf_writer);
                     try compressor.flush(compressed_data_writer);
-                    try self.writer.writeAll(compressed_data.items);
+                    try buf_writer.writeAll(compressed_data.items);
                 }
+                try self.writer.flush();
             }
             pub fn intoUncompressed(self: *Self) PacketClient(ReaderType, WriterType, null) {
                 return .{
@@ -173,16 +179,38 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
             }
         } else struct {
             pub fn readPacketLen(self: *Self, comptime PacketType: type, alloc: Allocator, len: usize) !PacketType.UserType {
-                var reader = std.io.limitedReader(self.reader, len);
-                const packet_res = PacketType.deserialize(alloc, &reader.reader());
-                if (meta.isError(packet_res)) _ = packet_res catch |err| return err;
-                var packet = packet_res catch unreachable;
-                return packet;
+                var lim_reader = io.limitedReader(self.reader.reader(), len);
+                var reader = io.countingReader(lim_reader.reader());
+                const result = PacketType.deserialize(alloc, reader.reader()) catch |err| {
+                    if (err == error.EndOfStream) {
+                        return err;
+                    } else {
+                        // we need to make sure we read the rest, or else the next packet that reads will intersect with this
+                        var r = reader.reader();
+                        while (reader.bytes_read < len) {
+                            _ = try r.readByte();
+                        }
+                        // TODO multiple different types of errors could come out of this. handle properly
+                        return err;
+                    }
+                };
+                if (reader.bytes_read < len) {
+                    std.log.info("read {}/{} bytes in packet, is this a group packet?", .{ reader.bytes_read, len });
+                    var r = reader.reader();
+                    std.log.info("next byte in potential group packet is 0x{X}", .{try r.readByte()});
+                    while (reader.bytes_read < len) {
+                        _ = try r.readByte();
+                    }
+                }
+                return result;
             }
 
             pub fn writePacket(self: *Self, comptime PacketType: type, packet: PacketType.UserType) !void {
-                try mcp.VarInt.write(@intCast(i32, PacketType.size(packet)), &self.writer);
-                try PacketType.write(packet, &self.writer);
+                var buf_writer = self.writer.writer();
+                try mcp.VarInt.write(@intCast(i32, PacketType.size(packet)), buf_writer);
+                // TODO: fill up rest of packet space with garbage on error?
+                try PacketType.write(packet, buf_writer);
+                try self.writer.flush();
             }
             pub fn intoCompressed(self: *Self, comptime threshold: i32) PacketClient(ReaderType, WriterType, threshold) {
                 return .{
@@ -191,12 +219,16 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
                 };
             }
         };
+        pub fn close(self: *Self) void {
+            self.connection.stream.close();
+        }
     };
 }
 
-pub fn packetClient(reader: anytype, writer: anytype, comptime threshold: ?i32) PacketClient(@TypeOf(reader), @TypeOf(writer), threshold) {
+pub fn packetClient(conn: net.StreamServer.Connection, reader: anytype, writer: anytype, comptime threshold: ?i32) PacketClient(@TypeOf(reader), @TypeOf(writer), threshold) {
     return .{
-        .reader = reader,
-        .writer = writer,
+        .connection = conn,
+        .reader = .{ .unbuffered_reader = reader },
+        .writer = .{ .unbuffered_writer = writer },
     };
 }
