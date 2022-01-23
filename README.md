@@ -2,6 +2,5 @@
 
 not too much functionality here
 
-at the time of writing, this is a tcp server that handles minecraft server status request, and a player can "join" but everything after initial chunk loading is all client sided
-
+a player is able to join, but all they can do is see other players also joined in the server walk around
 
