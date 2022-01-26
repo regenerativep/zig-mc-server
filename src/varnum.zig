@@ -12,11 +12,13 @@ pub const ReadVarNumError = error{
 pub fn readVarNum(comptime T: type, reader: anytype, read_length: ?*u16) !T {
     if (@typeInfo(T) != .Int) {
         @compileError("readVarNum expects an integer type");
+    } else if (meta.bitCount(T) < 8) {
+        @compileError("readVarNum expects a byte or larger");
     }
     const max_bytes = (@sizeOf(T) * 5) / 4;
     var value: T = 0;
     var len: std.math.Log2Int(T) = 0;
-    while (true) {
+    while (true) { // could this be inlined?
         const read_byte = try reader.readByte();
         value |= @as(T, read_byte & 0b01111111) << (len * 7);
         len += 1;

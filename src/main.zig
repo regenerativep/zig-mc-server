@@ -60,10 +60,25 @@ pub fn handleLogin(alloc: Allocator, game: *Game, cl: anytype) !void {
         std.log.info("didnt receive login start", .{});
         return;
     }
-    const username = login_start_packet.login_start;
+    const username_s = login_start_packet.login_start;
+    const username = std.mem.sliceTo(&username_s, 0);
     std.log.info("\"{s}\" trying to connect", .{username});
     const uuid = try mcp.uuidFromUsername(username);
-    try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .login_success = .{ .username = username, .uuid = uuid } });
+    var can_join: ?[]const u8 = null;
+    game.players_lock.lock();
+    for (game.players.items) |player| {
+        if (std.mem.eql(u8, &player.uuid.bytes, &uuid.bytes)) {
+            can_join = "{\"text\":\"You are already in the server\"}";
+            break;
+        }
+    }
+    game.players_lock.unlock();
+    if (can_join) |kick_msg| {
+        try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .disconnect = kick_msg });
+        return error{PlayerAlreadyInServer}.PlayerAlreadyInServer;
+    } else {
+        try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .login_success = .{ .username = username_s, .uuid = uuid } });
+    }
     // play state now
     const dimension_names = [_][]const u8{
         "minecraft:overworld",
@@ -131,6 +146,7 @@ pub fn handleLogin(alloc: Allocator, game: *Game, cl: anytype) !void {
         packet = try cl.readPacket(mcp.P.SB, alloc);
     }
     std.log.info("client settings: {any}", .{packet.client_settings});
+    const client_settings = packet.client_settings;
     try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .held_item_change = 0 });
     try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .declare_recipes = &[_]mcp.Recipe{
         .{
@@ -209,7 +225,7 @@ pub fn handleLogin(alloc: Allocator, game: *Game, cl: anytype) !void {
             .{
                 .uuid = uuid,
                 .data = .{
-                    .name = username,
+                    .name = username_s,
                     .properties = &[_]mcp.PlayerProperty.UserType{},
                     .gamemode = .Creative,
                     .ping = 0,
@@ -223,12 +239,14 @@ pub fn handleLogin(alloc: Allocator, game: *Game, cl: anytype) !void {
         game.players_lock.lock();
         defer game.players_lock.unlock();
         for (game.players.items) |player| {
+            var player_username = [_:0]u8{0} ** (16 * 4);
+            std.mem.copy(u8, player_username[0..player.username.len], player.username);
             try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .player_info = .{
                 .add_player = &[_]meta.Child(mcp.PlayerInfo.UnionType.Specs[0].UserType){
                     .{
                         .uuid = player.uuid,
                         .data = .{
-                            .name = player.username,
+                            .name = player_username,
                             .properties = &[_]mcp.PlayerProperty.UserType{},
                             .gamemode = .Creative,
                             .ping = player.ping.load(.Unordered),
@@ -379,11 +397,14 @@ pub fn handleLogin(alloc: Allocator, game: *Game, cl: anytype) !void {
             log.err("error during player disconnect for internal error: {any}", .{err});
         };
     }
+    var alloced_settings = try alloc.create(mcp.ClientSettings.UserType);
+    alloced_settings.* = client_settings;
     player.* = Player{
         .inner = cl.*,
         .eid = eid,
         .uuid = uuid,
         .username = try alloc.dupe(u8, username),
+        .settings = .{ .value = alloced_settings },
         .player_data = .{
             .x = 0,
             .y = 32,
@@ -402,7 +423,7 @@ pub fn handleLogin(alloc: Allocator, game: *Game, cl: anytype) !void {
         .{
             .uuid = uuid,
             .data = .{
-                .name = username,
+                .name = username_s,
                 .properties = &[_]mcp.PlayerProperty.UserType{},
                 .gamemode = mcp.Gamemode.Creative,
                 .ping = 0,
@@ -428,6 +449,12 @@ pub fn handleLogin(alloc: Allocator, game: *Game, cl: anytype) !void {
             } });
         }
     }
+    const formatted_msg = try std.fmt.allocPrint(alloc,
+        \\{{"text":"{s}","color":"yellow","extra":[{{"text":" joined the game","color":"white"}}]}}
+    , .{username});
+    defer alloc.free(formatted_msg);
+    player.broadcastChatMessage(game, formatted_msg);
+
     player.player_data_lock.lock();
     game.broadcastExcept(mcp.P.CB, mcp.P.CB.UserType{ .spawn_player = .{
         .entity_id = player.eid,
@@ -484,6 +511,7 @@ pub const Player = struct {
     eid: i32,
     uuid: Uuid,
     username: []const u8,
+    settings: atomic.Atomic(*mcp.ClientSettings.UserType),
 
     inner: PacketClientType,
     reader_lock: Thread.Mutex = .{},
@@ -517,6 +545,7 @@ pub const Player = struct {
                 log.err("lost eid {}: {any}", .{ self.eid, err });
             };
         }
+        defer alloc.destroy(self.settings.load(.Unordered));
         self.reader_lock.lock();
         while (self.alive.load(.Unordered)) {
             const packet = self.inner.readPacket(mcp.P.SB, alloc) catch |err| {
@@ -577,6 +606,23 @@ pub const Player = struct {
                     self.player_data.on_ground = on_ground;
                     self.player_data_lock.unlock();
                 },
+                .client_settings => |settings| {
+                    if (alloc.create(mcp.ClientSettings.UserType)) |new_settings| {
+                        new_settings.* = settings;
+                        var old_settings = self.settings.swap(new_settings, .Monotonic);
+                        alloc.destroy(old_settings);
+                    } else |err| log.err("failed to allocate space for new client settings: {any}", .{err});
+                },
+                .chat_message => |msg| {
+                    if (std.fmt.allocPrint(alloc,
+                        \\{{"text":"{s}","color":"aqua","extra":[{{"text":": {s}","color":"white"}}]}}
+                    , .{ self.username, msg })) |formatted_msg| {
+                        defer alloc.free(formatted_msg);
+                        self.broadcastChatMessage(game, formatted_msg);
+                    } else |err| {
+                        log.err("failed to broadcast chat message for player {s}: {any}", .{ self.username, err });
+                    }
+                },
                 else => log.info("got packet {any}", .{packet}),
             }
 
@@ -591,6 +637,19 @@ pub const Player = struct {
             }
         }
         game.players_lock.unlock();
+        game.broadcast(mcp.P.CB, mcp.P.CB.UserType{ .destroy_entities = &[_]i32{self.eid} });
+        game.broadcast(mcp.P.CB, mcp.P.CB.UserType{ .player_info = .{ .remove_player = &[_]meta.Child(mcp.PlayerInfo.UnionType.Specs[4].UserType){
+            .{
+                .uuid = self.uuid,
+                .data = {},
+            },
+        } } });
+        if (std.fmt.allocPrint(alloc,
+            \\{{"text":"{s}","color":"yellow","extra":[{{"text":" disconnected","color":"white"}}]}}
+        , .{self.username})) |formatted_msg| {
+            defer alloc.free(formatted_msg);
+            self.broadcastChatMessage(game, formatted_msg);
+        } else |err| log.err("failed to broadcast disconnect message for player {s}: {any}", .{ self.username, err });
     }
     pub fn sendKick(self: *Player, reason: PlayerKickReason) !void {
         const message = switch (reason) {
@@ -599,6 +658,22 @@ pub const Player = struct {
             .Kicked => "{\"text\":\"Kicked!\"}",
         };
         try self.inner.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .disconnect = message });
+    }
+    pub fn broadcastChatMessage(self: *Player, game: *Game, msg: []const u8) void {
+        game.players_lock.lock();
+        for (game.players.items) |player| {
+            const player_client_settings = player.settings.load(.Unordered);
+            if (player_client_settings.chat_mode == .Enabled) {
+                player.inner.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .chat_message = .{
+                    .message = msg,
+                    .position = .Chat,
+                    .sender = self.uuid,
+                } }) catch |err| {
+                    log.err("Failed to send chat message to client {s}: {any}", .{ player.username, err });
+                };
+            }
+        }
+        game.players_lock.unlock();
     }
     pub fn sendMovement(self: *Player, game: *Game) void {
         self.player_data_lock.lock();

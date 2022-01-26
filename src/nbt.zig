@@ -460,13 +460,13 @@ test "dynamic nbt item" {
     } };
     var buf = std.ArrayList(u8).init(testing.allocator);
     defer buf.deinit();
-    try data.write(&buf.writer());
+    try data.write(buf.writer());
     // https://wiki.vg/NBT#test.nbt
     const expected = [_]u8{ @enumToInt(Tag.ByteArray), 0, 4, 't', 'e', 's', 't', 0, 0, 0, 3, 0x01, 0x02, 0x03, @enumToInt(Tag.List), 0, 5, 'a', 'g', 'a', 'i', 'n', @enumToInt(Tag.Short), 0, 0, 0, 1, 0, 5, @enumToInt(Tag.End) };
     try testing.expectEqualSlices(u8, &expected, buf.items);
     try testing.expectEqual(expected.len, data.size());
     var read_stream = std.io.fixedBufferStream(&expected);
-    const de_res = try DynamicNbtItem.deserialize(testing.allocator, &read_stream.reader(), Tag.Compound);
+    const de_res = try DynamicNbtItem.deserialize(testing.allocator, read_stream.reader(), Tag.Compound);
     defer de_res.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 2), de_res.Compound.len);
     try testing.expectEqualStrings("test", de_res.Compound[0].name);

@@ -14,6 +14,7 @@ const VarNum = @import("varnum.zig").VarNum;
 
 pub const PROTOCOL_VERSION = 757;
 
+// pub const VarShort = VarNum(i16);
 pub const VarInt = VarNum(i32);
 pub const VarLong = VarNum(i64);
 
@@ -21,13 +22,21 @@ pub const PStringError = error{
     StringTooLarge,
 };
 
+pub const PSTRING_ARRAY_MAX_LEN = 64;
+
 pub fn PStringMax(comptime max_len_opt: ?usize) type {
     return struct {
-        pub const UserType = []const u8;
-        pub fn write(self: UserType, writer: anytype) !void {
-            try VarInt.write(@intCast(i32, self.len), writer);
-            try writer.writeAll(self);
+        pub const IsArray = max_len_opt != null and max_len_opt.? <= PSTRING_ARRAY_MAX_LEN;
+        pub const UserType = if (IsArray) [max_len_opt.? * 4:0]u8 else []const u8;
+
+        pub fn characterCount(self: UserType) !i32 {
+            return @intCast(i32, try unicode.utf8CountCodepoints(if (IsArray) std.mem.sliceTo(&self, 0) else self));
         }
+        pub fn write(self: UserType, writer: anytype) !void {
+            try VarInt.write(try characterCount(self), writer);
+            try writer.writeAll(if (IsArray) std.mem.sliceTo(&self, 0) else self);
+        }
+
         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
             const len = try VarInt.deserialize(alloc, reader);
             if (max_len_opt) |max_len| {
@@ -35,8 +44,8 @@ pub fn PStringMax(comptime max_len_opt: ?usize) type {
                     return error.StringTooLarge;
                 }
             }
-            var data = try std.ArrayList(u8).initCapacity(alloc, @intCast(usize, len));
-            defer data.deinit();
+            var data = if (IsArray) std.BoundedArray(u8, max_len_opt.? * 4 + 1){} else try std.ArrayList(u8).initCapacity(alloc, @intCast(usize, len));
+            defer if (!IsArray) data.deinit();
             var i: usize = 0;
             while (i < len) : (i += 1) {
                 const first_byte = try reader.readByte();
@@ -49,19 +58,52 @@ pub fn PStringMax(comptime max_len_opt: ?usize) type {
                     data.appendSliceAssumeCapacity(codepoint_buf[0 .. codepoint_len - 1]);
                 }
             }
-            return data.toOwnedSlice();
+            if (IsArray) {
+                assert(data.len < data.buffer.len);
+                data.buffer[data.len] = 0;
+                return @bitCast([max_len_opt.? * 4:0]u8, data.buffer);
+            } else {
+                return data.toOwnedSlice();
+            }
         }
         pub fn deinit(self: UserType, alloc: Allocator) void {
-            alloc.free(self);
+            if (IsArray) {
+                _ = self;
+                _ = alloc;
+            } else {
+                alloc.free(self);
+            }
         }
         pub fn size(self: UserType) usize {
-            return VarInt.size(@intCast(i32, self.len)) + self.len;
+            var len = characterCount(self) catch unreachable;
+            return VarInt.size(len) + if (IsArray) std.mem.sliceTo(&self, 0).len else self.len;
         }
     };
 }
 
-pub const PString = PStringMax(null);
+test "pstring" {
+    //var reader = std.io.fixedBufferStream();
+    const DataType = PStringMax(10);
+    var result = try testPacket(DataType, testing.allocator, &[_]u8{10} ++ "你好，我们没有时间。");
+    //std.debug.print("result len: {}, {}\n", .{ std.mem.sliceTo(&result, 0).len, DataType.characterCount(result) });
+    try testing.expectEqual(@as(usize, 30), std.mem.sliceTo(&result, 0).len);
+    try testing.expectEqual(@as(i32, 10), try DataType.characterCount(result));
+    try testing.expectEqualStrings("你好，我们没有时间。", std.mem.sliceTo(&result, 0));
+    try testing.expectEqual(@as(usize, 31), DataType.size(result));
+
+    const DataType2 = PStringMax(PSTRING_ARRAY_MAX_LEN + 1);
+    try testing.expect(!DataType2.IsArray);
+    var result2 = try testPacket(DataType2, testing.allocator, &[_]u8{10} ++ "你好，我们没有时间。");
+    defer DataType2.deinit(result2, testing.allocator);
+    try testing.expectEqual(@as(usize, 30), result2.len);
+    try testing.expectEqual(@as(i32, 10), try DataType2.characterCount(result2));
+    try testing.expectEqualStrings("你好，我们没有时间。", result2);
+    try testing.expectEqual(@as(usize, 31), DataType2.size(result2));
+}
+
+pub const PString = PStringMax(32767);
 pub const Identifier = PStringMax(32767);
+pub const ChatString = PStringMax(262144);
 
 pub fn intoAngle(val: f32) u8 {
     var new_val: isize = @floatToInt(isize, (val / 360.0) * 256.0);
@@ -501,11 +543,11 @@ pub const PlayerInfo = serde.TaggedUnion(Ds, VarInt, union(PlayerInfoAction) {
         properties: serde.PrefixedArray(Ds, VarInt, PlayerProperty),
         gamemode: Gamemode,
         ping: VarInt,
-        display_name: ?PString,
+        display_name: ?ChatString,
     }),
     update_gamemode: PlayerInfoVariant(Gamemode),
     update_latency: PlayerInfoVariant(VarInt),
-    update_display_name: PlayerInfoVariant(?PString),
+    update_display_name: PlayerInfoVariant(?ChatString),
     remove_player: PlayerInfoVariant(void),
     pub fn PlayerInfoVariant(comptime T: type) type {
         return serde.PrefixedArray(Ds, VarInt, struct {
@@ -796,6 +838,21 @@ pub const BlockFace = enum(u8) {
     West = 4,
     East = 5,
 };
+pub const ChatPosition = enum(u8) {
+    Chat = 0,
+    SystemMessage = 1,
+    GameInfo = 2,
+};
+pub const ClientSettings = Ds.Spec(struct {
+    locale: PStringMax(16),
+    view_distance: i8,
+    chat_mode: serde.Enum(Ds, VarInt, ChatMode),
+    chat_colors: bool,
+    displayed_skin_parts: DisplayedSkinParts,
+    main_hand: serde.Enum(Ds, VarInt, MainHand),
+    enable_text_filtering: bool,
+    allow_server_listings: bool,
+});
 
 pub const Ds = serde.DefaultSpec;
 pub const H = struct {
@@ -843,7 +900,7 @@ pub const L = struct {
             encryption_response = 0x01,
             login_plugin_response = 0x02,
         };
-        login_start: PString,
+        login_start: PStringMax(16),
         encryption_response: struct {
             shared_secret: serde.PrefixedArray(Ds, VarInt, u8),
             verify_token: serde.PrefixedArray(Ds, VarInt, u8),
@@ -861,7 +918,7 @@ pub const L = struct {
             set_compression = 0x03,
             login_plugin_request = 0x04,
         };
-        disconnect: PString,
+        disconnect: ChatString,
         encryption_request: struct {
             server_id: PStringMax(20),
             public_key: serde.PrefixedArray(Ds, VarInt, u8),
@@ -884,6 +941,7 @@ pub const P = struct {
     pub const SB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
             teleport_confirm = 0x00,
+            chat_message = 0x03,
             client_status = 0x04,
             client_settings = 0x05,
             close_window = 0x09,
@@ -901,17 +959,9 @@ pub const P = struct {
             player_block_placement = 0x2E,
         };
         teleport_confirm: VarInt,
+        chat_message: PStringMax(256),
         client_status: serde.Enum(Ds, VarInt, ClientStatus),
-        client_settings: struct {
-            locale: PStringMax(16),
-            view_distance: i8,
-            chat_mode: serde.Enum(Ds, VarInt, ChatMode),
-            chat_colors: bool,
-            displayed_skin_parts: DisplayedSkinParts,
-            main_hand: serde.Enum(Ds, VarInt, MainHand),
-            enable_text_filtering: bool,
-            allow_server_listings: bool,
-        },
+        client_settings: ClientSettings,
         close_window: u8,
         plugin_message: struct {
             channel: Identifier,
@@ -968,6 +1018,7 @@ pub const P = struct {
         pub const PacketIds = enum(i32) {
             spawn_player = 0x04,
             server_difficulty = 0x0E,
+            chat_message = 0x0F,
             declare_commands = 0x12,
             plugin_message = 0x18,
             disconnect = 0x1A,
@@ -982,6 +1033,7 @@ pub const P = struct {
             player_info = 0x36,
             player_position_and_look = 0x38,
             unlock_recipes = 0x39,
+            destroy_entities = 0x3A,
             entity_head_look = 0x3E,
             world_border_center = 0x42,
             world_border_lerp_size = 0x43,
@@ -1008,6 +1060,11 @@ pub const P = struct {
             difficulty: Difficulty,
             difficulty_locked: bool,
         },
+        chat_message: struct {
+            message: ChatString,
+            position: ChatPosition,
+            sender: UuidS,
+        },
         declare_commands: struct {
             nodes: serde.PrefixedArray(Ds, VarInt, CommandNode),
             root_index: VarInt,
@@ -1016,7 +1073,7 @@ pub const P = struct {
             channel: Identifier,
             data: serde.Remaining,
         },
-        disconnect: PString,
+        disconnect: ChatString,
         entity_status: struct {
             entity_id: i32,
             entity_status: i8,
@@ -1044,7 +1101,7 @@ pub const P = struct {
             is_hardcore: bool,
             gamemode: Gamemode,
             previous_gamemode: PreviousGamemode,
-            dimension_names: serde.PrefixedArray(Ds, VarInt, PString),
+            dimension_names: serde.PrefixedArray(Ds, VarInt, Identifier),
             dimension_codec: nbt.Named(DimensionCodecS, ""),
             dimension: nbt.Named(DimensionCodecTypeElementS, ""),
             dimension_name: Identifier,
@@ -1130,6 +1187,7 @@ pub const P = struct {
             Add: UnlockRecipesVariant(void),
             Remove: UnlockRecipesVariant(void),
         }),
+        destroy_entities: serde.PrefixedArray(Ds, VarInt, VarInt),
         entity_head_look: struct {
             entity_id: VarInt,
             yaw: u8,
@@ -1171,11 +1229,11 @@ pub const P = struct {
 
 fn testPacket(comptime PacketType: type, alloc: Allocator, data: []const u8) !PacketType.UserType {
     var stream = std.io.fixedBufferStream(data);
-    var result = try PacketType.deserialize(alloc, &stream.reader());
+    var result = try PacketType.deserialize(alloc, stream.reader());
     errdefer PacketType.deinit(result, alloc);
     var buffer = std.ArrayList(u8).init(alloc);
     defer buffer.deinit();
-    try PacketType.write(result, &buffer.writer());
+    try PacketType.write(result, buffer.writer());
     try testing.expectEqualSlices(u8, data, buffer.items);
     return result;
 }
