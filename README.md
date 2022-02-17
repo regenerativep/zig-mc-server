@@ -16,7 +16,7 @@ you need to get a `blocks.json` report from a Minecraft server jar. grab a serve
 
 `java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports`
 
-take the `generated/reports/block.json` and put it into a new `data/` folder in your cloned repo
+take the `generated/reports/block.json` and put it into a new `data/` folder in your cloned repo. also make a `src/gen/` folder
 
 run `zig build-exe generate_blocks.zig && ./generate_blocks`
 
