@@ -7,3 +7,7 @@ zig-out/
 /docgen_tmp/
 build_runner.zig
 src/old/
+src/gen/**
+generate_blocks
+data/**
+

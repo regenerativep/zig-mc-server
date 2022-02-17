@@ -12,6 +12,10 @@ const serde = @import("serde.zig");
 const nbt = @import("nbt.zig");
 const VarNum = @import("varnum.zig").VarNum;
 
+const blockgen = @import("gen/blocks.zig");
+pub const GlobalPaletteMaxId = blockgen.GlobalPaletteMaxId;
+pub const GlobalPaletteInt = blockgen.GlobalPaletteInt;
+
 pub const PROTOCOL_VERSION = 757;
 
 // pub const VarShort = VarNum(i16);
@@ -24,6 +28,7 @@ pub const PStringError = error{
 
 pub const PSTRING_ARRAY_MAX_LEN = 64;
 
+// todo: uh, probably want just separate types for the stack vs heap versions
 pub fn PStringMax(comptime max_len_opt: ?usize) type {
     return struct {
         pub const IsArray = max_len_opt != null and max_len_opt.? <= PSTRING_ARRAY_MAX_LEN;
@@ -666,8 +671,6 @@ pub const ClientStatus = enum(i32) {
     RequestStats = 1,
 };
 
-pub const GlobalPaletteMaxId = 20341; // https://wiki.vg/Data_Generators#Blocks_report . got this from my 1.18.1 server jar
-pub const GlobalPaletteInt = std.math.IntFittingRange(0, GlobalPaletteMaxId);
 pub const PaletteType = enum {
     Block,
     Biome,
