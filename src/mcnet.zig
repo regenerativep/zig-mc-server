@@ -1,6 +1,5 @@
 const std = @import("std");
 const net = std.net;
-const Reader = std.io.Reader;
 const meta = std.meta;
 const Allocator = std.mem.Allocator;
 const deflate = std.compress.deflate;
@@ -114,6 +113,34 @@ pub const ZlibCompressor = struct {
     }
 };
 
+// modified from stdlib to have an error message separate from EndOfStream
+pub fn LimitedReader(comptime ReaderType: type) type {
+    return struct {
+        inner_reader: ReaderType,
+        bytes_left: u64,
+
+        pub const Error = ReaderType.Error || error{ReadTooFar};
+        pub const Reader = io.Reader(*Self, Error, read);
+
+        const Self = @This();
+
+        pub fn read(self: *Self, dest: []u8) Error!usize {
+            if (self.bytes_left == 0) return error.ReadTooFar;
+            const max_read = std.math.min(self.bytes_left, dest.len);
+            const n = try self.inner_reader.read(dest[0..max_read]);
+            self.bytes_left -= n;
+            return n;
+        }
+
+        pub fn reader(self: *Self) Reader {
+            return .{ .context = self };
+        }
+    };
+}
+pub fn limitedReader(inner_reader: anytype, bytes_left: u64) LimitedReader(@TypeOf(inner_reader)) {
+    return .{ .inner_reader = inner_reader, .bytes_left = bytes_left };
+}
+
 pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, comptime compression_threshold: ?i32) type {
     return struct {
         pub const Threshold = compression_threshold;
@@ -141,7 +168,7 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
                 if (data_len == 0) {
                     return try PacketType.deserialize(alloc, reader.reader());
                 } else {
-                    var decompressor = std.zlib.zlibStream(alloc, reader.reader());
+                    var decompressor = std.compress.zlib.zlibStream(alloc, reader.reader());
                     defer decompressor.deinit();
                     return try PacketType.deserialize(alloc, decompressor.reader()); // TODO can these readers not be pointers?
                 }
@@ -156,6 +183,7 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
                     try PacketType.write(packet, buf_writer);
                 } else {
                     // not sure if compression works and im not sure ill try for a while
+                    // update: it does not work. (because it doesnt compile at the moment)
 
                     // we need the length of the compressed data :(
                     var compressed_data = try std.ArrayList(u8).initCapacity(compressor.allocator, threshold);
@@ -179,10 +207,10 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
             }
         } else struct {
             pub fn readPacketLen(self: *Self, comptime PacketType: type, alloc: Allocator, len: usize) !PacketType.UserType {
-                var lim_reader = io.limitedReader(self.reader.reader(), len);
+                var lim_reader = limitedReader(self.reader.reader(), len);
                 var reader = io.countingReader(lim_reader.reader());
                 const result = PacketType.deserialize(alloc, reader.reader()) catch |err| {
-                    if (err == error.EndOfStream) {
+                    if (err == error.EndOfStream or err == error.ReadTooFar) {
                         return err;
                     } else {
                         // we need to make sure we read the rest, or else the next packet that reads will intersect with this
@@ -191,6 +219,7 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
                             _ = try r.readByte();
                         }
                         // TODO multiple different types of errors could come out of this. handle properly
+                        // actually it might be fine since the only error that comes out of readByte might be EndOfStream?
                         return err;
                     }
                 };
@@ -205,7 +234,7 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
                 return result;
             }
 
-            pub fn writePacket(self: *Self, comptime PacketType: type, packet: PacketType.UserType) !void {
+            pub fn writePacket(self: *Self, comptime PacketType: type, packet: anytype) !void {
                 var buf_writer = self.writer.writer();
                 try mcp.VarInt.write(@intCast(i32, PacketType.size(packet)), buf_writer);
                 // TODO: fill up rest of packet space with garbage on error?

@@ -153,6 +153,9 @@ pub const Player = struct {
             log.err("lost eid {}: {any}", .{ self.eid, err });
         };
         //self.alive.store(false, .Unordered);
+        if (self.alive.load(.Unordered)) {
+            self.inner.close();
+        }
         alloc.free(self.username);
         alloc.destroy(self);
     }
@@ -161,11 +164,15 @@ pub const Player = struct {
         while (self.alive.load(.Unordered)) {
             self.reader_lock.lock();
             const packet = self.inner.readPacket(mcp.P.SB, alloc) catch |err| {
+                defer self.reader_lock.unlock();
                 if (err == error.EndOfStream) {
                     log.info("closing client", .{});
                     break;
                 }
                 log.err("failed to read packet: {any}", .{err});
+                if (err == error.ReadTooFar) {
+                    log.err("likely a server deserialization bug", .{});
+                }
                 continue;
             };
             defer mcp.P.SB.deinit(packet, alloc);

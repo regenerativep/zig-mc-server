@@ -97,8 +97,8 @@ pub fn VarNum(comptime T: type) type {
     return struct {
         pub const UserType = T;
 
-        pub fn write(self: UserType, writer: anytype) !void {
-            try writeVarNum(T, writer, self, null);
+        pub fn write(self: anytype, writer: anytype) !void {
+            try writeVarNum(T, writer, @as(UserType, self), null);
         }
         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
             _ = alloc;
@@ -108,8 +108,8 @@ pub fn VarNum(comptime T: type) type {
             _ = self;
             _ = alloc;
         }
-        pub fn size(self: UserType) usize {
-            var temp_val = self;
+        pub fn size(self: anytype) usize {
+            var temp_val = @as(UserType, self);
             var total_size: usize = 0;
             while (true) {
                 total_size += 1;

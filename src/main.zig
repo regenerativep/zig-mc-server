@@ -42,14 +42,14 @@ pub fn handleStatus(alloc: Allocator, cl: anytype) !void {
         \\  }
         \\}
     ;
-    try cl.writePacket(mcp.S.CB, mcp.S.CB.UserType{ .response = response_data });
+    try cl.writePacket(mcp.S.CB, .{ .response = response_data });
     const ping_packet = try cl.readPacket(mcp.S.SB, alloc);
     defer mcp.S.SB.deinit(ping_packet, alloc);
     if (ping_packet != .ping) {
         std.log.info("didnt receive a ping", .{});
         return;
     }
-    try cl.writePacket(mcp.S.CB, mcp.S.CB.UserType{ .pong = ping_packet.ping });
+    try cl.writePacket(mcp.S.CB, .{ .pong = ping_packet.ping });
     std.log.info("done", .{});
 }
 
@@ -75,11 +75,13 @@ pub fn handleLogin(alloc: Allocator, game: *mcg.Game, cl: anytype) !void {
     }
     game.players_lock.unlock();
     if (can_join) |kick_msg| {
-        try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .disconnect = kick_msg });
+        try cl.writePacket(mcp.L.CB, .{ .disconnect = kick_msg });
         return error{PlayerAlreadyInServer}.PlayerAlreadyInServer;
     } else {
+        log.info("trying to write packet", .{});
         try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .login_success = .{ .username = username_s, .uuid = uuid } });
     }
+    log.info("hey 5", .{});
     // play state now
     const dimension_names = [_][]const u8{
         "minecraft:overworld",
@@ -112,26 +114,32 @@ pub fn handleLogin(alloc: Allocator, game: *mcg.Game, cl: anytype) !void {
         },
     });
     std.log.info("sent join game", .{});
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .plugin_message = .{
-        .channel = "minecraft:brand",
-        .data = &[_]u8{ 5, 'z', 'i', 'g', 'm', 'c' },
-    } });
-    std.log.info("sent difficulty", .{});
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .server_difficulty = .{
-        .difficulty = .Peaceful,
-        .difficulty_locked = true,
-    } });
-    std.log.info("sent player abilities", .{});
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .player_abilities = .{
-        .flags = .{
-            .invulnerable = true,
-            .flying = false,
-            .allow_flying = true,
-            .creative_mode = true,
+    try cl.writePacket(mcp.P.CB, .{
+        .plugin_message = .{
+            .channel = "minecraft:brand",
+            .data = &[_]u8{ 5, 'z', 'i', 'g', 'm', 'c' },
         },
-        .flying_speed = 0.05,
-        .field_of_view_modifier = 0.1,
-    } });
+    });
+    std.log.info("sent difficulty", .{});
+    try cl.writePacket(mcp.P.CB, .{
+        .server_difficulty = .{
+            .difficulty = .Peaceful,
+            .difficulty_locked = true,
+        },
+    });
+    std.log.info("sent player abilities", .{});
+    try cl.writePacket(mcp.P.CB, .{
+        .player_abilities = .{
+            .flags = .{
+                .invulnerable = true,
+                .flying = false,
+                .allow_flying = true,
+                .creative_mode = true,
+            },
+            .flying_speed = 0.05,
+            .field_of_view_modifier = 0.1,
+        },
+    });
     var packet = try cl.readPacket(mcp.P.SB, alloc);
     std.log.info("packet {any}", .{packet});
     defer mcp.P.SB.deinit(packet, alloc);
@@ -148,29 +156,29 @@ pub fn handleLogin(alloc: Allocator, game: *mcg.Game, cl: anytype) !void {
     }
     std.log.info("client settings: {any}", .{packet.client_settings});
     const client_settings = packet.client_settings;
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .held_item_change = 0 });
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .declare_recipes = &[_]mcp.Recipe{
+    try cl.writePacket(mcp.P.CB, .{ .held_item_change = 0 });
+    try cl.writePacket(mcp.P.CB, .{ .declare_recipes = .{
         .{
             .type = "crafting_shapeless",
             .recipe_id = "minecraft:recipe_flint_and_steel",
             .data = .{ .crafting_shapeless = .{
                 .group = "steel",
-                .ingredients = &[_]mcp.Ingredient.UserType{
+                .ingredients = .{
                     &[_]mcp.Slot.UserType{.{
                         .item_id = 762,
                         .item_count = 1,
-                        .nbt = &[_]nbt.TagDynNbtPair{},
+                        .nbt = &.{},
                     }},
                     &[_]mcp.Slot.UserType{.{
                         .item_id = 692,
                         .item_count = 1,
-                        .nbt = &[_]nbt.TagDynNbtPair{},
+                        .nbt = &.{},
                     }},
                 },
                 .result = .{
                     .item_id = 680,
                     .item_count = 1,
-                    .nbt = &[_]nbt.TagDynNbtPair{},
+                    .nbt = &.{},
                 },
             } },
         },
@@ -204,7 +212,7 @@ pub fn handleLogin(alloc: Allocator, game: *mcg.Game, cl: anytype) !void {
     //});
     try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .entity_status = .{ .entity_id = eid, .entity_status = 28 } }); // set op level to 4
     const teleport_id: i32 = 5;
-    const pos_and_look = mcp.P.CB.UserType{ .player_position_and_look = .{
+    const pos_and_look = .{ .player_position_and_look = .{
         .x = 0,
         .y = 32,
         .z = 0,
@@ -267,108 +275,27 @@ pub fn handleLogin(alloc: Allocator, game: *mcg.Game, cl: anytype) !void {
             },
         },
     } });
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .update_view_position = .{ .chunk_x = 0, .chunk_z = 0 } });
-    const height = 256;
-    const floor_height = 16;
-    const MbInt = std.math.IntFittingRange(0, height - 1);
-    const ratio = 64 / meta.bitCount(MbInt);
-    const long_count = ((16 * 16) + (ratio - 1)) / ratio;
-    var longs = try alloc.alloc(i64, long_count);
-    defer alloc.free(longs);
-    var total: usize = 0;
-    var i: usize = 0;
-    while (i < long_count) : (i += 1) {
-        var current_long: i64 = 0;
-        var j: usize = 0;
-        while (j < ratio) : (j += 1) {
-            if (total < 16 * 16) {
-                current_long = (current_long << meta.bitCount(MbInt)) | @as(MbInt, floor_height);
-                total += 1;
-            } else {
-                break;
-            }
-        }
-        const remainder = 64 % meta.bitCount(MbInt);
-        longs[i] = current_long << remainder;
-    }
-    const section_count = height / 16;
-    var sky_light_mask = try std.DynamicBitSetUnmanaged.initFull(alloc, section_count + 2);
-    defer sky_light_mask.deinit(alloc);
-    sky_light_mask.setValue(0, false);
-    sky_light_mask.setValue(1, false);
-    var empty_sky_light_mask = try sky_light_mask.clone(alloc);
-    defer empty_sky_light_mask.deinit(alloc);
-    empty_sky_light_mask.toggleAll();
+    try cl.writePacket(mcp.P.CB, .{ .update_view_position = .{ .chunk_x = 0, .chunk_z = 0 } });
 
-    var block_light_mask = try std.DynamicBitSetUnmanaged.initEmpty(alloc, section_count + 2);
-    defer block_light_mask.deinit(alloc);
-    var empty_block_light_mask = try block_light_mask.clone(alloc);
-    defer empty_block_light_mask.deinit(alloc);
-    empty_block_light_mask.toggleAll();
-
-    const full_light = [_]u8{0xFF} ** 2048;
-    const sky_light_arrays = [_][]const u8{&full_light} ** section_count; // section count + 2 - 2
-
-    var chunk_packet = mcp.P.CB.UserType{
-        .chunk_data_and_update_light = .{
-            .chunk_x = 0,
-            .chunk_z = 0,
-            .heightmaps = .{
-                .MOTION_BLOCKING = longs,
-                .WORLD_SURFACE = null,
-            },
-            .data = &([_]mcp.ChunkSection.UserType{
-                .{
-                    .block_count = 4096,
-                    .block_states = .{
-                        .bits_per_entry = 0,
-                        .palette = .{ .single = 6 }, // andesite
-                        .data_array = &[_]mcp.GlobalPaletteInt{},
-                    },
-                    .biomes = .{
-                        .bits_per_entry = 0,
-                        .palette = .{ .single = 1 }, // plains?
-                        .data_array = &[_]mcp.GlobalPaletteInt{},
-                    },
-                },
-            } ++ [_]mcp.ChunkSection.UserType{
-                .{
-                    .block_count = 0,
-                    .block_states = .{
-                        .bits_per_entry = 0,
-                        .palette = .{ .single = 0 },
-                        .data_array = &[_]mcp.GlobalPaletteInt{},
-                    },
-                    .biomes = .{
-                        .bits_per_entry = 0,
-                        .palette = .{ .single = 1 },
-                        .data_array = &[_]mcp.GlobalPaletteInt{},
-                    },
-                },
-            } ** (section_count - 1)),
-            .block_entities = &[_]mcp.BlockEntity.UserType{},
-            .trust_edges = true,
-            .sky_light_mask = sky_light_mask,
-            .block_light_mask = block_light_mask,
-            .empty_sky_light_mask = empty_sky_light_mask,
-            .empty_block_light_mask = empty_block_light_mask,
-            .sky_light_arrays = std.mem.span(&sky_light_arrays),
-            .block_light_arrays = &[_][]const u8{},
-        },
-    };
-    var k: i32 = -4;
-    while (k <= 4) : (k += 1) {
-        var j: i32 = -4;
-        while (j <= 4) : (j += 1) {
-            chunk_packet.chunk_data_and_update_light.chunk_x = k;
-            chunk_packet.chunk_data_and_update_light.chunk_z = j;
-            try cl.writePacket(mcp.P.CB, chunk_packet);
-            //std.log.info("writing chunk xz: {} {}", .{ k, j });
+    // isnert chunk code here
+    var k: i32 = -5;
+    while (k <= 5) : (k += 1) {
+        var j: i32 = -5;
+        while (j <= 5) : (j += 1) {
+            const chunk = mcp.chunk.Chunk{
+                .chunk_x = k,
+                .chunk_z = j,
+                .block_entities = .{},
+                .sections = mcp.chunk.DEFAULT_FLAT_SECTIONS,
+                .height_map = mcp.chunk.Chunk.generateHeightMap(&mcp.chunk.DEFAULT_FLAT_SECTIONS),
+            };
+            try chunk.send(cl);
+            std.log.info("writing chunk xz: {} {}", .{ k, j });
         }
     }
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .world_border_center = .{ .x = 0.0, .z = 0.0 } });
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .world_border_size = 128.0 });
-    try cl.writePacket(mcp.P.CB, mcp.P.CB.UserType{ .spawn_position = .{
+    try cl.writePacket(mcp.P.CB, .{ .world_border_center = .{ .x = 0.0, .z = 0.0 } });
+    try cl.writePacket(mcp.P.CB, .{ .world_border_size = 128.0 });
+    try cl.writePacket(mcp.P.CB, .{ .spawn_position = .{
         .location = .{
             .x = 0,
             .z = 0,
@@ -450,11 +377,16 @@ pub fn handleLogin(alloc: Allocator, game: *mcg.Game, cl: anytype) !void {
             } });
         }
     }
-    const formatted_msg = try std.fmt.allocPrint(alloc,
-        \\{{"text":"{s}","color":"yellow","extra":[{{"text":" joined the game","color":"white"}}]}}
-    , .{username});
-    defer alloc.free(formatted_msg);
-    player.broadcastChatMessage(game, formatted_msg);
+    {
+        const unfmt_text =
+            \\{"text":"","color":"yellow","extra":[{"text":" joined the game","color":"white"}]}
+        ;
+        var buf: [unfmt_text.len + 64]u8 = undefined;
+        const formatted_msg = std.fmt.bufPrint(&buf,
+            \\{{"text":"{s}","color":"yellow","extra":[{{"text":" joined the game","color":"white"}}]}}
+        , .{username}) catch unreachable; // given that username is max 16 unicode characters, this should never fail
+        player.broadcastChatMessage(game, formatted_msg);
+    }
 
     player.player_data_lock.lock();
     game.broadcastExcept(mcp.P.CB, mcp.P.CB.UserType{ .spawn_player = .{
@@ -485,7 +417,15 @@ pub fn handleClient(alloc: Allocator, game: *mcg.Game, conn: net.StreamServer.Co
         .Login => {
             if (handshake_packet.handshake.protocol_version != @as(i32, mcp.PROTOCOL_VERSION)) {
                 defer cl.close();
-                try cl.writePacket(mcp.L.CB, mcp.L.CB.UserType{ .disconnect = "{\"text\":\"Incorrect protocol version; this server is on " ++ std.fmt.comptimePrint("{}", .{mcp.PROTOCOL_VERSION}) ++ ".\"}" });
+                var buf: [128]u8 = undefined;
+                var disconnect_msg = std.fmt.bufPrint(&buf,
+                    \\{{"text":"Incorrect protocol version; this server is on {}. You are on {}."}}
+                , .{ mcp.PROTOCOL_VERSION, handshake_packet.handshake.protocol_version }) catch
+                    \\{"text":"Incorrect protocol version; this server is on
+                ++ std.fmt.comptimePrint("{}", .{mcp.PROTOCOL_VERSION}) ++
+                    \\"}
+                ;
+                try cl.writePacket(mcp.L.CB, .{ .disconnect = disconnect_msg });
             } else {
                 try handleLogin(alloc, game, &cl);
             }

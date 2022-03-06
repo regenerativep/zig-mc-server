@@ -1,5 +1,5 @@
-// Generate the necessary blocks.json using a server jar
-// https://wiki.vg/Data_Generators#Blocks_report
+// Generate the necessary data from blocks.json using a server jar
+// needs blocks.json, can follow https://wiki.vg/Data_Generators#Blocks_report to get
 
 const std = @import("std");
 const fs = std.fs;
@@ -8,9 +8,73 @@ const mem = std.mem;
 const assert = std.debug.assert;
 const Allocator = mem.Allocator;
 
+pub const BlockPropertyVariantsType = union(enum) {
+    Enum,
+    Bool,
+    Number: struct {
+        start: usize,
+        max: usize,
+    },
+    pub fn from(self: @This(), name: []const u8, writer: anytype) !void {
+        try writer.writeAll("@intCast(GlobalPaletteInt, ");
+        switch (self) {
+            .Enum => try writer.print("@enumToInt(b.{s})", .{name}),
+            .Bool => try writer.print("if(b.{s}) @as(GlobalPaletteInt, 0) else @as(GlobalPaletteInt, 1)", .{name}),
+            .Number => |n| try writer.print("b.{s} - {}", .{ name, n.start }),
+        }
+        try writer.writeAll(");\n");
+    }
+};
 pub const BlockProperty = struct {
     name: []const u8,
     variants: [][]const u8,
+    variants_type: BlockPropertyVariantsType,
+    pub fn init(name: []const u8, variants: [][]const u8) BlockProperty {
+        var prop = BlockProperty{
+            .name = name,
+            .variants = variants,
+            .variants_type = undefined,
+        };
+        if (variants.len == 2 and mem.eql(u8, "true", variants[0]) and mem.eql(u8, "false", variants[1])) {
+            prop.variants_type = .Bool;
+        } else {
+            var max_num: ?isize = null;
+            var start_num: ?isize = null;
+            blk: {
+                var last: ?isize = null;
+                for (variants) |variant| {
+                    const val = std.fmt.parseInt(isize, variant, 10) catch |err| {
+                        assert(err == error.InvalidCharacter);
+                        break :blk;
+                    };
+                    if (last == null) {
+                        start_num = val;
+                        last = val;
+                    } else {
+                        if (val == last.? + 1) {
+                            last = val;
+                        } else {
+                            break :blk;
+                        }
+                    }
+                }
+                max_num = last;
+                break :blk;
+            }
+            if (max_num) |num| {
+                prop.variants_type = .{ .Number = .{
+                    .max = @intCast(usize, num),
+                    .start = @intCast(usize, start_num.?),
+                } };
+            } else {
+                for (variants) |variant| {
+                    assert(std.ascii.isAlpha(variant[0]));
+                }
+                prop.variants_type = .Enum;
+            }
+        }
+        return prop;
+    }
     pub fn deinit(self: BlockProperty, alloc: Allocator) void {
         alloc.free(self.variants);
     }
@@ -94,10 +158,7 @@ pub const Block = struct {
                     }
                     const owned = variants.toOwnedSlice();
                     errdefer alloc.free(owned);
-                    try props.append(BlockProperty{
-                        .name = prop_name,
-                        .variants = owned,
-                    });
+                    try props.append(BlockProperty.init(prop_name, owned));
                 }
                 assert(block.properties == null);
                 block.properties = props.toOwnedSlice();
@@ -206,7 +267,7 @@ pub fn main() !void {
         \\        }
         \\    }
         \\    
-        \\    pub fn toDefaultGlobalPaletteId(material: BlockMaterial) GlobalPaletteInt{
+        \\    pub fn toDefaultGlobalPaletteId(material: BlockMaterial) GlobalPaletteInt {
         \\        switch(material) {
         \\
     );
@@ -214,6 +275,16 @@ pub fn main() !void {
         try writer.print("    " ** 3 ++ "BlockMaterial.{s} => return {},\n", .{ block.bareName(), block.begin_id + block.default_state });
     }
 
+    try writer.writeAll(
+        \\        }
+        \\    }
+        \\    pub fn toFirstGlobalPaletteId(material: BlockMaterial) GlobalPaletteInt {
+        \\        switch(material) {
+        \\
+    );
+    for (blocks.items) |block| {
+        try writer.print("    " ** 3 ++ "BlockMaterial.{s} => return {},\n", .{ block.bareName(), block.begin_id });
+    }
     try writer.writeAll(
         \\        }
         \\    }
@@ -229,11 +300,23 @@ pub fn main() !void {
         if (block.properties) |props| {
             try writer.print("    {s}: struct {{\n", .{block.bareName()});
             for (props) |prop| {
-                try writer.print("    " ** 2 ++ "{s}: enum {{\n", .{prop.name});
-                for (prop.variants) |variant| {
-                    try writer.print("    " ** 3 ++ "@\"{s}\",\n", .{variant});
+                switch (prop.variants_type) {
+                    .Enum => {
+                        try writer.print("    " ** 2 ++ "{s}: enum {{\n", .{prop.name});
+                        for (prop.variants) |variant| {
+                            //try writer.print("    " ** 3 ++ "@\"{s}\",\n", .{variant});
+                            try writer.print("    " ** 3 ++ "{s},\n", .{variant});
+                        }
+                        try writer.writeAll("    " ** 2 ++ "},\n");
+                    },
+                    .Bool => {
+                        try writer.print("    " ** 2 ++ "{s}: bool,\n", .{prop.name});
+                    },
+                    .Number => |n| {
+                        const bit_count = std.math.log2_int_ceil(usize, n.max + n.start + 1);
+                        try writer.print("    " ** 2 ++ "{s}: u{},\n", .{ prop.name, bit_count });
+                    },
                 }
-                try writer.writeAll("    " ** 2 ++ "},\n");
             }
             try writer.writeAll("    },\n");
         } else {
@@ -258,21 +341,26 @@ pub fn main() !void {
             var i: usize = props.len;
             while (i != 0) : (i -= 1) {
                 const prop = props[i - 1];
-                //try writer.print("    " ** 4 ++ "const @\"{s}\" = switch(variant_id % {}) {{\n", .{ prop.name, prop.variants.len });
-                //var j: usize = 0;
-                //while (j < prop.variants.len) : (j += 1) {
-                //    try writer.print("    " ** 5 ++ "{} => .@\"{s}\",\n", .{ j, prop.variants[j] });
-                //}
-                //try writer.print("    " ** 5 ++ "else => unreachable,\n", .{});
-                //try writer.writeAll("    " ** 4 ++ "};\n");
-                try writer.print("    " ** 4 ++ "const @\"{s}\" = @intToEnum(property_fields[{}].field_type, variant_id % {});\n", .{ prop.name, i - 1, prop.variants.len });
+                try writer.print("    " ** 4 ++ "const @\"{s}\" = ", .{prop.name});
+                switch (prop.variants_type) {
+                    .Enum => {
+                        try writer.print("@intToEnum(property_fields[{}].field_type, variant_id % {});\n", .{ i - 1, prop.variants.len });
+                    },
+                    .Bool => {
+                        try writer.print("(variant_id % 2) == 0;\n", .{});
+                    },
+                    .Number => |n| {
+                        try writer.print("@intCast(u{}, (variant_id % {}) + {});\n", .{ std.math.log2_int_ceil(usize, n.start + n.max + 1), prop.variants.len, n.start });
+                    },
+                }
                 if (i != 1) {
                     try writer.print("    " ** 4 ++ "variant_id /= {};\n", .{prop.variants.len});
                 }
             }
+            try writer.writeAll("    " ** 4 ++ "_ = property_fields;\n");
             try writer.print("    " ** 4 ++ "return Block{{ .{s} = .{{\n", .{block.bareName()});
             for (block.properties.?) |prop| {
-                try writer.print("    " ** 5 ++ ".@\"{s}\" = @\"{s}\",\n", .{ prop.name, prop.name });
+                try writer.print("    " ** 5 ++ ".{s} = @\"{s}\",\n", .{ prop.name, prop.name });
             }
             try writer.writeAll("    " ** 4 ++ "} };\n" ++ ("    " ** 3) ++ "},\n");
         } else {
@@ -283,6 +371,37 @@ pub fn main() !void {
         \\            else => return BlockFromIdError.InvalidId,
         \\        }
         \\    }
+        \\
+        \\    pub fn toGlobalPaletteId(self: Block) GlobalPaletteInt {
+        \\        switch(self) {
+        \\
+    );
+    for (blocks.items) |block| {
+        if (block.properties != null and block.properties.?.len > 0) {
+            const props = block.properties.?;
+            try writer.print("    " ** 3 ++ "Block.{s} => |b| {{\n", .{block.bareName()});
+            //try writer.print("    " ** 4 ++ "const first_id: GlobalPaletteInt = {};\n", .{block.begin_id});
+            try writer.writeAll("    " ** 4 ++ "var local_id: GlobalPaletteInt = ");
+            try props[0].variants_type.from(props[0].name, writer);
+            var i: usize = props.len;
+            while (i != 0) : (i -= 1) {
+                const prop = props[i - 1];
+                if (i != 1) {
+                    try writer.print("    " ** 4 ++ "local_id = (local_id * {}) + ", .{prop.variants.len});
+                    try prop.variants_type.from(prop.name, writer);
+                }
+            }
+            try writer.print("    " ** 4 ++ "return {} + local_id;\n", .{block.begin_id});
+            try writer.writeAll("    " ** 3 ++ "},\n");
+        } else {
+            try writer.print("    " ** 3 ++ "Block.{s} => return {},\n", .{ block.bareName(), block.begin_id });
+        }
+    }
+
+    try writer.writeAll(
+        \\        }
+        \\    }
+        \\
         \\};
         \\
         \\
@@ -293,8 +412,8 @@ pub fn main() !void {
         \\test "from global palette id" {
         \\    {
         \\        const block = try Block.fromGlobalPaletteId(160);
-        \\        try testing.expect(block.oak_leaves.distance == .@"7");
-        \\        try testing.expect(block.oak_leaves.persistent == .@"true");
+        \\        try testing.expect(block.oak_leaves.distance == 7);
+        \\        try testing.expect(block.oak_leaves.persistent == true);
         \\    }
         \\    {
         \\        const block = try Block.fromGlobalPaletteId(20);
@@ -302,7 +421,14 @@ pub fn main() !void {
         \\    }
         \\    {
         \\        const block = try Block.fromGlobalPaletteId(21);
-        \\        try testing.expect(block.oak_sapling.stage == .@"0");
+        \\        try testing.expect(block.oak_sapling.stage == 0);
+        \\    }
+        \\}
+        \\
+        \\test "to global palette id" {
+        \\    {
+        \\        const id = Block.toGlobalPaletteId(try Block.fromGlobalPaletteId(160));
+        \\        try testing.expect(id == 160);
         \\    }
         \\}
     );
@@ -310,7 +436,9 @@ pub fn main() !void {
 
     std.debug.print("{s}\n", .{data.items});
 
-    var target_file = try fs.cwd().createFile("src/gen/blocks.zig", .{});
+    const target_filename = "src/gen/blocks.zig";
+    //const target_filename = "blocks.zig";
+    var target_file = try fs.cwd().createFile(target_filename, .{});
     defer target_file.close();
     try target_file.writeAll(data.items);
 }

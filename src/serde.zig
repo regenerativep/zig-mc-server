@@ -98,14 +98,54 @@ pub fn StructUserType(comptime Partial: type, comptime Specs: []const type) type
     } });
 }
 
+// pub fn Struct(comptime UsedSpec: type, comptime Partial: type) type {
+//     const info = @typeInfo(Partial).Struct;
+//     return struct {
+//         pub const Specs = StructFieldSpecs(UsedSpec, Partial);
+//         pub const UserType = StructUserType(Partial, std.mem.span(&Specs));
+//         pub fn write(self: UserType, writer: anytype) !void {
+//             inline for (info.fields) |field, i| {
+//                 try Specs[i].write(@field(self, field.name), writer);
+//             }
+//         }
+//         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+//             var data: UserType = undefined;
+//             inline for (info.fields) |field, i| {
+//                 @field(data, field.name) = try Specs[i].deserialize(alloc, reader);
+//             }
+//             return data;
+//         }
+//         pub fn deinit(self: UserType, alloc: Allocator) void {
+//             inline for (info.fields) |field, i| {
+//                 Specs[i].deinit(@field(self, field.name), alloc);
+//             }
+//         }
+//         pub fn size(self: UserType) usize {
+//             var total_size: usize = 0;
+//             inline for (info.fields) |field, i| {
+//                 total_size += Specs[i].size(@field(self, field.name));
+//             }
+//             return total_size;
+//         }
+//     };
+// }
+
 pub fn Struct(comptime UsedSpec: type, comptime Partial: type) type {
     const info = @typeInfo(Partial).Struct;
     return struct {
         pub const Specs = StructFieldSpecs(UsedSpec, Partial);
         pub const UserType = StructUserType(Partial, std.mem.span(&Specs));
-        pub fn write(self: UserType, writer: anytype) !void {
+
+        pub fn write(self: anytype, writer: anytype) !void {
+            const CustomType = @TypeOf(self);
             inline for (info.fields) |field, i| {
-                try Specs[i].write(@field(self, field.name), writer);
+                if (@hasField(CustomType, field.name)) {
+                    try Specs[i].write(@field(self, field.name), writer);
+                } else if (@typeInfo(field.field_type) == .Optional) {
+                    try Specs[i].write(null, writer);
+                } else {
+                    @compileError("Custom struct \"" ++ @typeName(CustomType) ++ "\" missing required field: \"" ++ field.name ++ "\"");
+                }
             }
         }
         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
@@ -120,10 +160,17 @@ pub fn Struct(comptime UsedSpec: type, comptime Partial: type) type {
                 Specs[i].deinit(@field(self, field.name), alloc);
             }
         }
-        pub fn size(self: UserType) usize {
+        pub fn size(self: anytype) usize {
+            const CustomType = @TypeOf(self);
             var total_size: usize = 0;
             inline for (info.fields) |field, i| {
-                total_size += Specs[i].size(@field(self, field.name));
+                if (@hasField(CustomType, field.name)) {
+                    total_size += Specs[i].size(@field(self, field.name));
+                } else if (@typeInfo(field.field_type) == .Optional) {
+                    total_size += Specs[i].size(null);
+                } else {
+                    @compileError("Custom struct \"" ++ @typeName(CustomType) ++ "\" missing required field: \"" ++ field.name ++ "\"");
+                }
             }
             return total_size;
         }
@@ -197,28 +244,41 @@ pub fn Union(comptime UsedSpec: type, comptime PartialUnion: type) type {
         pub const Specs = UnionSpecs(UsedSpec, PartialUnion);
         pub const UserType = UnionUserType(PartialUnion, std.mem.span(&Specs));
         pub const IntType = meta.Tag(meta.Tag(UserType));
-        pub fn getInt(self: UserType) IntType {
-            return @intCast(IntType, @enumToInt(self));
+        const field_enum = meta.FieldEnum(meta.Tag(UserType));
+        pub fn getInt(self: anytype) IntType {
+            const info = @typeInfo(@TypeOf(self));
+            if (info == .Union) {
+                return @intCast(IntType, @enumToInt(self));
+            } else {
+                assert(info == .Struct and info.Struct.fields.len == 1);
+                return @intCast(IntType, @enumToInt(@field(meta.Tag(UserType), info.Struct.fields[0].name)));
+            }
         }
         fn tagEnumField(comptime i: comptime_int) builtin.TypeInfo.EnumField {
             return meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
         }
-        pub fn write(self: UserType, writer: anytype) !void {
-            const tag_int = getInt(self);
-            inline for (meta.fields(UserType)) |field, i| {
-                //const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
-                const enum_field = tagEnumField(i);
-                if (enum_field.value == tag_int) {
-                    const res = Specs[i].write(@field(self, field.name), writer);
-                    if (meta.isError(res)) res catch |err| return err;
-                    return;
+        pub fn write(self: anytype, writer: anytype) !void {
+            const info = @typeInfo(@TypeOf(self));
+            if (info == .Union) {
+                const tag_int = getInt(self);
+                inline for (meta.fields(UserType)) |field, i| {
+                    const enum_field = tagEnumField(i);
+                    if (enum_field.value == tag_int) {
+                        const res = Specs[i].write(@field(self, field.name), writer);
+                        if (meta.isError(res)) res catch |err| return err;
+                        return;
+                    }
                 }
+                return error.InvalidTag;
+            } else {
+                assert(info == .Struct and info.Struct.fields.len == 1);
+                const name = info.Struct.fields[0].name;
+                const i = @enumToInt(@field(field_enum, name));
+                try Specs[i].write(@field(self, name), writer);
             }
-            return error.InvalidTag;
         }
         pub fn deserialize(alloc: Allocator, reader: anytype, tag_int: IntType) !UserType {
             inline for (meta.fields(UserType)) |field, i| {
-                //const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
                 const enum_field = tagEnumField(i);
                 if (enum_field.value == tag_int) {
                     // untested if this workaround is necessary for write, but it
@@ -243,17 +303,25 @@ pub fn Union(comptime UsedSpec: type, comptime PartialUnion: type) type {
                 }
             }
         }
-        pub fn size(self: UserType) usize {
-            const tag_int = getInt(self);
-            inline for (meta.fields(UserType)) |field, i| {
-                _ = field;
-                //const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
-                const enum_field = tagEnumField(i);
-                if (enum_field.value == tag_int) {
-                    return Specs[i].size(@field(self, field.name));
+        pub fn size(self: anytype) usize {
+            const info = @typeInfo(@TypeOf(self));
+            if (info == .Union) {
+                const tag_int = getInt(self);
+                inline for (meta.fields(UserType)) |field, i| {
+                    _ = field;
+                    //const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
+                    const enum_field = tagEnumField(i);
+                    if (enum_field.value == tag_int) {
+                        return Specs[i].size(@field(self, field.name));
+                    }
                 }
+                return 0;
+            } else {
+                assert(info == .Struct and info.Struct.fields.len == 1);
+                const name = info.Struct.fields[0].name;
+                const i = @enumToInt(@field(field_enum, name));
+                return Specs[i].size(@field(self, name));
             }
-            return 0;
         }
     };
 }
@@ -266,7 +334,7 @@ pub fn TaggedUnion(comptime UsedSpec: type, comptime PartialTag: type, comptime 
         }
         pub const UnionType = Union(UsedSpec, PartialUnion);
         pub const UserType = UnionType.UserType;
-        pub fn write(self: UserType, writer: anytype) !void {
+        pub fn write(self: anytype, writer: anytype) !void {
             const tag_int = UnionType.getInt(self);
             try TagType.write(tag_int, writer);
             try UnionType.write(self, writer);
@@ -279,7 +347,7 @@ pub fn TaggedUnion(comptime UsedSpec: type, comptime PartialTag: type, comptime 
         pub fn deinit(self: UserType, alloc: Allocator) void {
             UnionType.deinit(self, alloc);
         }
-        pub fn size(self: UserType) usize {
+        pub fn size(self: anytype) usize {
             const tag_int = UnionType.getInt(self);
             return TagType.size(tag_int) + UnionType.size(self);
         }
@@ -337,6 +405,7 @@ pub fn Packed(comptime T: type) type {
 }
 
 test "packed spec" {
+    // TODO: how could i forget about endianness ! probably has to be fixed
     const TestStruct = Packed(packed struct {
         a: bool,
         b: bool,
@@ -365,9 +434,10 @@ pub fn Array(comptime UsedSpec: type, comptime Partial: type) type {
     return struct {
         pub const ElemType = UsedSpec.Spec(info.child);
         pub const UserType = [info.len]ElemType.UserType;
-        pub fn write(self: UserType, writer: anytype) !void {
-            for (self) |item| {
-                try ElemType.write(item, writer);
+        pub fn write(self: anytype, writer: anytype) !void {
+            var iter = toIterator(self);
+            while (iter.next()) |elem| {
+                try ElemType.write(elem, writer);
             }
         }
         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
@@ -462,15 +532,16 @@ test "serde full spec" {
 
 pub const Remaining = struct {
     pub const UserType = []const u8;
+    // TODO: it'd be nice to be able to pass in any type to write
     pub fn write(self: UserType, writer: anytype) !void {
         try writer.writeAll(self);
     }
     pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
         var data = std.ArrayList(u8).init(alloc);
-        defer data.deinit(); // also should act as errdefer
+        defer data.deinit(); // should be same function as an errdefer here; if successful, there shouldnt be any memory to deinit
         var buf: [1024]u8 = undefined;
         while (true) {
-            const len = try reader.read(&buf);
+            const len = reader.read(&buf) catch |err| if (err == error.ReadTooFar) 0 else return err;
             if (len == 0) {
                 break;
             }
@@ -552,14 +623,119 @@ pub fn SizePrefixedArray(comptime UsedSpec: type, comptime PartialLength: type, 
     };
 }
 
+// pub fn PrefixedArray(comptime UsedSpec: type, comptime PartialLength: type, comptime T: type) type {
+//     return struct {
+//         pub const LengthType = UsedSpec.Spec(PartialLength);
+//         pub const SpecType = UsedSpec.Spec(T);
+//         pub const UserType = []const SpecType.UserType;
+//         pub fn write(self: UserType, writer: anytype) !void {
+//             try LengthType.write(@intCast(LengthType.UserType, self.len), writer);
+//             for (self) |elem| {
+//                 try SpecType.write(elem, writer);
+//             }
+//         }
+//         pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
+//             const len = @intCast(usize, try LengthType.deserialize(alloc, reader));
+//             var data = try alloc.alloc(SpecType.UserType, len);
+//             errdefer alloc.free(data);
+//             for (data) |*elem, i| {
+//                 errdefer {
+//                     var ind: usize = 0;
+//                     while (ind < i) : (ind += 1) {
+//                         SpecType.deinit(data[ind], alloc);
+//                     }
+//                 }
+//                 elem.* = try SpecType.deserialize(alloc, reader);
+//             }
+//             return data;
+//         }
+//         pub fn deinit(self: UserType, alloc: Allocator) void {
+//             for (self) |elem| {
+//                 SpecType.deinit(elem, alloc);
+//             }
+//             alloc.free(self);
+//         }
+//         pub fn size(self: UserType) usize {
+//             var total_size = LengthType.size(@intCast(LengthType.UserType, self.len));
+//             for (self) |elem| {
+//                 total_size += SpecType.size(elem);
+//             }
+//             return total_size;
+//         }
+//     };
+// }
+
+// guessing it doesnt handle sentinels at the moment
+pub fn ToIterator(comptime T: type) type {
+    const info = @typeInfo(T);
+    //if (info == .Pointer and info.Pointer.size == .One) return ToIterator(meta.Child(T));
+    if (info == .Array or (info == .Pointer and (info.Pointer.size == .Slice or (info.Pointer.size == .One and @typeInfo(info.Pointer.child) != .Struct)))) {
+        return struct {
+            index: usize = 0,
+            backing: T,
+
+            pub fn next(self: *@This()) ?meta.Elem(T) {
+                if (self.index < self.backing.len) {
+                    const elem = self.backing[self.index];
+                    self.index += 1;
+                    return elem;
+                } else return null;
+            }
+            pub fn size(self: *const @This()) usize {
+                return self.backing.len;
+            }
+        };
+    } else if (info == .Struct and @hasDecl(T, "next") and @hasDecl(T, "size")) {
+        return T;
+    }
+    @compileError("type passed to ToIterator is not iterable: " ++ @typeName(T));
+}
+
+pub fn TupleArrayType(comptime T: type) type {
+    const fields = @typeInfo(T).Struct.fields;
+    return [fields.len]fields[0].field_type;
+}
+// TODO: doesnt work on tuples of tuples
+pub fn tupleToArray(val: anytype) TupleArrayType(@TypeOf(val)) {
+    const fields = @typeInfo(@TypeOf(val)).Struct.fields;
+    comptime {
+        inline for (fields) |field| {
+            assert(field.field_type == fields[0].field_type);
+        }
+    }
+    var arr: [fields.len]fields[0].field_type = undefined;
+    comptime var ind = 0;
+    inline while (ind < fields.len) : (ind += 1) {
+        arr[ind] = val[ind];
+    }
+    return arr;
+}
+
+pub fn toIterator(val: anytype) ToIterator(if (@typeInfo(@TypeOf(val)) == .Struct and @typeInfo(@TypeOf(val)).Struct.is_tuple) TupleArrayType(@TypeOf(val)) else @TypeOf(val)) {
+    const info = @typeInfo(@TypeOf(val));
+    const actual_val = switch (info) {
+        .Struct => if (info.Struct.is_tuple) tupleToArray(val) else val,
+        .Pointer => if (info.Pointer.size == .One and @typeInfo(info.Pointer.child) != .Struct) .{ .backing = val } else (if (info.Pointer.size == .Slice) val else {
+            @compileError("failed to turn type " ++ @typeName(@TypeOf(val)) ++ " into an iterator");
+        }),
+        else => unreachable,
+    };
+    if (@typeInfo(@TypeOf(actual_val)) == .Struct) {
+        return actual_val;
+    } else {
+        return .{ .backing = actual_val };
+    }
+}
+
 pub fn PrefixedArray(comptime UsedSpec: type, comptime PartialLength: type, comptime T: type) type {
     return struct {
         pub const LengthType = UsedSpec.Spec(PartialLength);
         pub const SpecType = UsedSpec.Spec(T);
         pub const UserType = []const SpecType.UserType;
-        pub fn write(self: UserType, writer: anytype) !void {
-            try LengthType.write(@intCast(LengthType.UserType, self.len), writer);
-            for (self) |elem| {
+        pub fn write(self: anytype, writer: anytype) !void {
+            var iter = toIterator(self);
+            try LengthType.write(@intCast(LengthType.UserType, iter.size()), writer);
+            while (iter.next()) |elem| {
                 try SpecType.write(elem, writer);
             }
         }
@@ -584,9 +760,10 @@ pub fn PrefixedArray(comptime UsedSpec: type, comptime PartialLength: type, comp
             }
             alloc.free(self);
         }
-        pub fn size(self: UserType) usize {
-            var total_size = LengthType.size(@intCast(LengthType.UserType, self.len));
-            for (self) |elem| {
+        pub fn size(self: anytype) usize {
+            var iter = toIterator(self);
+            var total_size = LengthType.size(@intCast(LengthType.UserType, iter.size()));
+            while (iter.next()) |elem| {
                 total_size += SpecType.size(elem);
             }
             return total_size;
@@ -613,6 +790,18 @@ test "serde prefixed array" {
     defer SpecType.deinit(result, testing.allocator);
     try testing.expectEqualSlices(u16, &[_]u16{ 0x0001, 0x0201, 0x0810, 0x0002 }, result);
     try testing.expectEqual(buf.len, SpecType.size(result));
+
+    var wrote_data = std.ArrayList(u8).init(testing.allocator);
+    defer wrote_data.deinit();
+    try SpecType.write(result, wrote_data.writer());
+    try testing.expectEqualSlices(u8, &buf, wrote_data.items);
+    wrote_data.clearAndFree();
+    const arr: [4]u16 = .{ 0x0001, 0x0201, 0x0810, 0x0002 };
+    try SpecType.write(arr, wrote_data.writer()); // should be being passed an array, not a slice
+    try testing.expectEqualSlices(u8, &buf, wrote_data.items);
+    wrote_data.clearAndFree();
+    try SpecType.write(.{ @as(u16, 0x0001), @as(u16, 0x0201), @as(u16, 0x0810), @as(u16, 0x0002) }, wrote_data.writer()); // tuple
+    try testing.expectEqualSlices(u8, &buf, wrote_data.items);
 }
 
 pub fn Optional(comptime UsedSpec: type, comptime T: type) type {

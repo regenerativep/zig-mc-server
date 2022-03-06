@@ -11,16 +11,11 @@ const Uuid = @import("uuid6");
 const serde = @import("serde.zig");
 const nbt = @import("nbt.zig");
 const VarNum = @import("varnum.zig").VarNum;
-
-const blockgen = @import("gen/blocks.zig");
-pub const GlobalPaletteMaxId = blockgen.GlobalPaletteMaxId;
-pub const GlobalPaletteInt = blockgen.GlobalPaletteInt;
-
-pub const PROTOCOL_VERSION = 757;
-
-// pub const VarShort = VarNum(i16);
 pub const VarInt = VarNum(i32);
 pub const VarLong = VarNum(i64);
+pub const chunk = @import("chunk.zig");
+
+pub const PROTOCOL_VERSION = 757;
 
 pub const PStringError = error{
     StringTooLarge,
@@ -28,7 +23,7 @@ pub const PStringError = error{
 
 pub const PSTRING_ARRAY_MAX_LEN = 64;
 
-// todo: uh, probably want just separate types for the stack vs heap versions
+// todo: uh, probably want just separate types for the stack vs heap versions. can do fancy auto stuff later once those are around
 pub fn PStringMax(comptime max_len_opt: ?usize) type {
     return struct {
         pub const IsArray = max_len_opt != null and max_len_opt.? <= PSTRING_ARRAY_MAX_LEN;
@@ -167,6 +162,7 @@ pub const DimensionCodecDimensionTypeElement = struct {
     ultrawarm: bool,
     has_ceiling: bool,
 };
+
 pub const DimensionCodec = struct {
     @"minecraft:dimension_type": struct { @"type": []const u8 = "minecraft:dimension_type", value: []DimensionType },
     @"minecraft:worldgen/biome": struct {
@@ -239,8 +235,8 @@ pub const DEFAULT_DIMENSION_TYPE_ELEMENT: DimensionCodecTypeElementS.UserType = 
     .bed_works = true,
     .effects = "minecraft:overworld",
     .has_raids = true,
-    .min_y = 0,
-    .height = 256,
+    .min_y = chunk.MIN_Y,
+    .height = chunk.MAX_HEIGHT,
     .logical_height = 256,
     .coordinate_scale = 1.0,
     .ultrawarm = false,
@@ -264,8 +260,8 @@ pub const DEFUALT_DIMENSION_CODEC: DimensionCodecS.UserType = .{
                     .bed_works = true,
                     .effects = "minecraft:overworld",
                     .has_raids = true,
-                    .min_y = 0,
-                    .height = 256,
+                    .min_y = chunk.MIN_Y,
+                    .height = chunk.MAX_HEIGHT,
                     .logical_height = 256,
                     .coordinate_scale = 1.0,
                     .ultrawarm = false,
@@ -460,7 +456,7 @@ pub const Recipe = struct {
     });
 
     pub const UserType = @This();
-    pub fn write(self: UserType, writer: anytype) !void {
+    pub fn write(self: anytype, writer: anytype) !void {
         try Identifier.write(self.type, writer);
         try Identifier.write(self.recipe_id, writer);
         try RecipeData.write(self.data, writer);
@@ -480,7 +476,7 @@ pub const Recipe = struct {
         Identifier.deinit(self.recipe_id, alloc);
         RecipeData.deinit(self.data, alloc);
     }
-    pub fn size(self: UserType) usize {
+    pub fn size(self: anytype) usize {
         return RecipeData.size(self.data) + Identifier.size(self.type) + Identifier.size(self.recipe_id);
     }
 };
@@ -565,15 +561,6 @@ pub const PlayerProperty = Ds.Spec(struct {
     name: PStringMax(32767),
     value: PStringMax(32767),
     signature: ?PStringMax(32767),
-});
-pub const BlockEntity = Ds.Spec(struct {
-    xz: packed struct {
-        z: u4,
-        x: u4,
-    },
-    z: i16,
-    entity_type: VarInt,
-    data: nbt.DynamicCompound,
 });
 
 pub const BitSet = struct {
@@ -670,147 +657,6 @@ pub const ClientStatus = enum(i32) {
     PerformRespawn = 0,
     RequestStats = 1,
 };
-
-pub const PaletteType = enum {
-    Block,
-    Biome,
-};
-pub const PalettedContainerError = error{
-    InvalidBitCount,
-};
-
-pub fn readCompactedDataArray(comptime T: type, alloc: Allocator, reader: anytype, bit_count: usize) ![]T {
-    const long_count = @intCast(usize, try VarInt.deserialize(alloc, reader));
-    const total_per_long = 64 / bit_count;
-    var data = try std.ArrayList(T).initCapacity(alloc, long_count * total_per_long);
-    const shift_amount = @intCast(u6, bit_count);
-    defer data.deinit();
-    const mask: u64 = (1 << shift_amount) - 1;
-    var i: usize = 0;
-    while (i < long_count) : (i += 1) {
-        const long = try reader.readIntBig(u64);
-        var j: usize = 0;
-        while (j < total_per_long) : (j += 1) {
-            data.appendAssumeCapacity(@intCast(T, long & mask));
-            long = long >> shift_amount;
-        }
-    }
-    try data.resize((data.items.len / 64) * 64);
-    return data.toOwnedSlice();
-}
-pub fn writeCompactedDataArray(comptime T: type, data: []T, writer: anytype, bit_count: usize) !void {
-    const total_per_long = 64 / bit_count;
-    const long_count = (data.len + (total_per_long - 1)) / total_per_long;
-    try VarInt.write(@intCast(i32, long_count), writer);
-    const shift_amount = @intCast(u6, bit_count);
-    var i: usize = 0;
-    while (i < long_count) : (i += 1) {
-        var long: u64 = 0;
-        var j: u6 = 0;
-        while (j < total_per_long) : (j += 1) {
-            const ind = i * total_per_long + j;
-            if (ind < data.len) {
-                long = long | (@intCast(u64, data[ind]) << (j * shift_amount));
-            } else {
-                break;
-            }
-        }
-        try writer.writeIntBig(u64, long);
-    }
-}
-pub fn compactedDataArraySize(comptime T: type, data: []T, bit_count: usize) usize {
-    if (bit_count == 0) return 1;
-    const total_per_long = 64 / bit_count;
-    const long_count = (data.len + (total_per_long - 1)) / total_per_long;
-    return VarInt.size(@intCast(i32, long_count)) + @sizeOf(u64) * long_count;
-}
-
-pub fn PalettedContainer(comptime which_palette: PaletteType) type {
-    return struct {
-        bits_per_entry: u8,
-        palette: Palette.UserType,
-        data_array: []GlobalPaletteInt,
-
-        pub const Palette = serde.Union(Ds, union(enum) {
-            single: VarInt,
-            indirect: serde.PrefixedArray(Ds, VarInt, VarInt),
-            direct: void,
-        });
-        const max_bits = switch (which_palette) {
-            .Block => meta.bitCount(GlobalPaletteInt),
-            .Biome => 6,
-        }; // 61 total biomes i think (which means if just 4 more are added, this needs to be updated)
-        const max_indirect_bits = switch (which_palette) {
-            .Block => 8,
-            .Biome => 3,
-        }; // https://wiki.vg/Chunk_Format
-
-        pub const UserType = @This();
-        pub fn write(self: UserType, writer: anytype) !void {
-            try writer.writeByte(self.bits_per_entry);
-            try Palette.write(self.palette, writer);
-            const actual_bits = switch (self.bits_per_entry) {
-                0 => 0,
-                1...max_indirect_bits => |b| if (which_palette == .Block) (if (b < 4) 4 else b) else b,
-                (max_indirect_bits + 1)...max_bits => max_bits,
-                else => return error.InvalidBitCount,
-            };
-            if (actual_bits == 0) {
-                try writer.writeByte(0);
-            } else {
-                try writeCompactedDataArray(GlobalPaletteInt, self.data_array, writer, actual_bits);
-            }
-        }
-        pub fn deserialize(alloc: Allocator, reader: anytype) !UserType {
-            var self: UserType = undefined;
-            self.bits_per_entry = try reader.readByte();
-            var actual_bits: usize = undefined;
-            var tag: meta.Tag(Palette.UserType) = undefined;
-            switch (self.bits_per_entry) {
-                0 => {
-                    actual_bits = 0;
-                    tag = .single;
-                },
-                1...max_indirect_bits => |b| {
-                    actual_bits = if (which_palette == .Block) (if (b < 4) 4 else b) else b;
-                    tag = .indirect;
-                },
-                (max_indirect_bits + 1)...max_bits => {
-                    actual_bits = max_bits;
-                    tag = .direct;
-                },
-                else => return error.InvalidBitCount,
-            }
-            self.palette = try Palette.deserialize(alloc, reader, @enumToInt(tag));
-            if (actual_bits == 0) {
-                _ = try VarInt.deserialize(alloc, reader);
-                self.data_array = &[_]u8{};
-            } else {
-                self.data_array = try readCompactedDataArray(GlobalPaletteInt, alloc, reader, actual_bits);
-            }
-            return self;
-        }
-        pub fn deinit(self: UserType, alloc: Allocator) void {
-            Palette.deinit(self.palette, alloc);
-            alloc.free(self.data_array);
-        }
-        pub fn size(self: UserType) usize {
-            const actual_bits = switch (self.bits_per_entry) {
-                0 => 0,
-                1...max_indirect_bits => |b| if (which_palette == .Block) (if (b < 4) 4 else b) else b,
-                (max_indirect_bits + 1)...max_bits => max_bits,
-                else => unreachable,
-            };
-            return 1 + Palette.size(self.palette) + compactedDataArraySize(GlobalPaletteInt, self.data_array, actual_bits);
-        }
-    };
-}
-
-pub const ChunkSection = Ds.Spec(struct {
-    block_count: i16,
-    block_states: PalettedContainer(.Block),
-    biomes: PalettedContainer(.Biome),
-});
 
 pub const EntityActionId = enum(i32) {
     StartSneaking = 0,
@@ -954,12 +800,14 @@ pub const P = struct {
             player_position_and_rotation = 0x12,
             player_rotation = 0x13,
             player_movement = 0x14,
+            player_abilities = 0x19,
             player_digging = 0x1A,
             entity_action = 0x1B,
             held_item_change = 0x25,
             creative_inventory_action = 0x28,
             animation = 0x2C,
             player_block_placement = 0x2E,
+            use_item = 0x2F,
         };
         teleport_confirm: VarInt,
         chat_message: PStringMax(256),
@@ -991,6 +839,13 @@ pub const P = struct {
             on_ground: bool,
         },
         player_movement: bool,
+        player_abilities: packed struct {
+            // spec just says for flying but im going to assume it includes the other stuff
+            invulnerable: bool,
+            flying: bool,
+            allow_flying: bool,
+            creative_mode: bool,
+        },
         player_digging: struct {
             status: serde.Enum(Ds, VarInt, PlayerDiggingStatus),
             location: Position,
@@ -1016,6 +871,7 @@ pub const P = struct {
             cursor_position_z: f32,
             inside_block: bool,
         },
+        use_item: serde.Enum(Ds, VarInt, Hand),
     });
     pub const CB = serde.TaggedUnion(Ds, VarInt, union(PacketIds) {
         pub const PacketIds = enum(i32) {
@@ -1089,8 +945,8 @@ pub const P = struct {
                 MOTION_BLOCKING: []i64,
                 WORLD_SURFACE: ?[]i64,
             }, ""),
-            data: serde.SizePrefixedArray(Ds, VarInt, ChunkSection),
-            block_entities: serde.PrefixedArray(Ds, VarInt, BlockEntity),
+            data: serde.SizePrefixedArray(Ds, VarInt, chunk.ChunkSection),
+            block_entities: serde.PrefixedArray(Ds, VarInt, chunk.BlockEntity),
             trust_edges: bool,
             sky_light_mask: BitSet,
             block_light_mask: BitSet,
