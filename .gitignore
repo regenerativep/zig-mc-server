@@ -8,6 +8,7 @@ zig-out/
 build_runner.zig
 src/old/
 src/gen/**
-generate_blocks
 data/**
-
+libraries/
+logs/
+*.jar

@@ -450,7 +450,7 @@ pub fn main() anyerror!void {
     var server = net.StreamServer.init(.{ .reuse_address = true });
     defer server.deinit();
     try server.listen(address);
-    std.log.info("listening", .{});
+    std.log.info("Listening on 127.0.0.1:25400", .{});
     while (true) {
         const conn = try server.accept();
 

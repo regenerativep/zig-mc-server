@@ -198,7 +198,7 @@ pub fn main() !void {
     }){};
     defer _ = gpa.deinit();
     var alloc = gpa.allocator();
-    var file = try fs.cwd().openFile("data/blocks.json", .{});
+    var file = try fs.cwd().openFile("data/reports/blocks.json", .{});
     var file_data = try file.readToEndAlloc(alloc, 3999999999);
     defer alloc.free(file_data);
     var token_stream = json.TokenStream.init(file_data);
