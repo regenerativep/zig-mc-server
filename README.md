@@ -6,21 +6,23 @@ The goal of this project is not necessarily to make a Minecraft server, but rath
 
 At the moment, a player can join the server, see other players move around, and type in chat.
 
+Your server IP localhost:25400
+
 ## building
 
-i use git submodules, sorry
+I use git submodules, sorry
 
 `git clone --recurse-submodules https://github.com/regenerativep/zig-mc-server`
 
-you need to get a `blocks.json` report from a Minecraft server jar. grab a server jar and run
+You need to get a `blocks.json` report from a Minecraft server jar. Grab a server jar and run:
 
-`java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports`
+`java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --output data`
 
-take the `generated/reports/block.json` and put it into a new `data/` folder in your cloned repo. also make a `src/gen/` folder
+Make a `src/gen/` folder
 
-run `zig build-exe generate_blocks.zig && ./generate_blocks`
+Run `zig run scripts/generate_blocks.zig`
 
-finally `zig build run`
+Finally `zig build run`
 
 
 
