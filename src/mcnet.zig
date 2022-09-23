@@ -161,7 +161,7 @@ pub fn PacketClient(comptime ReaderType: type, comptime WriterType: type, compti
             var len = try mcp.VarInt.deserialize(alloc, self.reader.reader());
             return try self.readPacketLen(PacketType, alloc, @intCast(usize, len));
         }
-        usingnamespace if (compression_threshold) |threshold| struct {
+        pub usingnamespace if (compression_threshold) |threshold| struct {
             pub fn readPacketLen(self: *Self, comptime PacketType: type, alloc: Allocator, len: usize) !PacketType.UserType {
                 var reader = io.limitedReader(self.reader.reader(), len);
                 const data_len = try mcp.VarInt.deserialize(alloc, reader.reader());

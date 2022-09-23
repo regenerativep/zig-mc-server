@@ -67,12 +67,8 @@ pub fn PStringMax(comptime max_len_opt: ?usize) type {
             }
         }
         pub fn deinit(self: UserType, alloc: Allocator) void {
-            if (IsArray) {
-                _ = self;
-                _ = alloc;
-            } else {
+            if (!IsArray)
                 alloc.free(self);
-            }
         }
         pub fn size(self: UserType) usize {
             var len = characterCount(self) catch unreachable;

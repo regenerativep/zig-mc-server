@@ -461,3 +461,7 @@ pub fn main() anyerror!void {
         };
     }
 }
+
+test {
+    std.testing.refAllDeclsRecursive(@This());
+}

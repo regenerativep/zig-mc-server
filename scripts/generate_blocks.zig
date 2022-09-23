@@ -337,6 +337,7 @@ pub fn main() !void {
             try writer.print("    " ** 3 ++ "{}...{} => {{\n", .{ block.begin_id, block.begin_id + perm_count - 1 });
             try writer.print("    " ** 4 ++ "var variant_id = id - {};\n", .{block.begin_id});
             try writer.print("    " ** 4 ++ "const property_fields = @typeInfo(fields[{}].field_type).Struct.fields;\n", .{b_ind});
+            var unused = true;
             const props = block.properties.?;
             var i: usize = props.len;
             while (i != 0) : (i -= 1) {
@@ -345,6 +346,7 @@ pub fn main() !void {
                 switch (prop.variants_type) {
                     .Enum => {
                         try writer.print("@intToEnum(property_fields[{}].field_type, variant_id % {});\n", .{ i - 1, prop.variants.len });
+                        unused = false;
                     },
                     .Bool => {
                         try writer.print("(variant_id % 2) == 0;\n", .{});
@@ -357,7 +359,7 @@ pub fn main() !void {
                     try writer.print("    " ** 4 ++ "variant_id /= {};\n", .{prop.variants.len});
                 }
             }
-            try writer.writeAll("    " ** 4 ++ "_ = property_fields;\n");
+            if (unused) try writer.writeAll("    " ** 4 ++ "_ = property_fields;\n");
             try writer.print("    " ** 4 ++ "return Block{{ .{s} = .{{\n", .{block.bareName()});
             for (block.properties.?) |prop| {
                 try writer.print("    " ** 5 ++ ".{s} = @\"{s}\",\n", .{ prop.name, prop.name });

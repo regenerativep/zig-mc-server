@@ -1,6 +1,6 @@
 # zig-mc-server
 
-This is a Minecraft server written in the programming language Zig.
+This is a Minecraft server written in the programming language Zig (works with 0.10.0 version).
 
 The goal of this project is not necessarily to make a Minecraft server, but rather to develop the protocol library and other important parts of a Minecraft server for future projects.
 
@@ -20,9 +20,6 @@ You need to get a `blocks.json` report from a Minecraft server jar. Grab a serve
 
 Make a `src/gen/` folder
 
-Run `zig run scripts/generate_blocks.zig`
+Run `zig run -fstage1 scripts/generate_blocks.zig`
 
 Finally `zig build run`
-
-
-

@@ -97,22 +97,18 @@ pub fn CompoundFieldSpecs(comptime UsedSpec: type, comptime Partial: type) [meta
 
 pub fn CompoundUserType(comptime Partial: type, comptime Specs: []const type) type {
     const info = @typeInfo(Partial).Struct;
-    var fields: [info.fields.len]builtin.TypeInfo.StructField = undefined;
+    comptime var fields: [info.fields.len]builtin.Type.StructField = undefined;
     inline for (info.fields) |*field, i| {
         var f = field.*;
         const is_optional = @typeInfo(info.fields[i].field_type) == .Optional;
         f.field_type = if (is_optional) ?Specs[i].UserType else Specs[i].UserType;
-        if (is_optional) {
-            f.default_value = @as(f.field_type, null); // this doesnt actually work, see https://github.com/ziglang/zig/issues/10555
-        } else {
-            f.default_value = null;
-        }
+        f.default_value = null;
         fields[i] = f;
     }
-    return @Type(builtin.TypeInfo{ .Struct = .{
+    return @Type(builtin.Type{ .Struct = .{
         .layout = info.layout,
         .fields = &fields,
-        .decls = &[_]builtin.TypeInfo.Declaration{},
+        .decls = &[_]builtin.Type.Declaration{},
         .is_tuple = info.is_tuple,
     } });
 }

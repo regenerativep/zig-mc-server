@@ -220,7 +220,7 @@ pub const Player = struct {
 
             var packet: ?mcp.P.CB.UserType = null;
             if (position_changed) {
-                const max_dist_changed = math.max3(math.absFloat(nd.x - ld.x), math.absFloat(nd.y - ld.y), math.absFloat(nd.z - ld.z));
+                const max_dist_changed = math.max3(@fabs(nd.x - ld.x), @fabs(nd.y - ld.y), @fabs(nd.z - ld.z));
                 if (max_dist_changed > 8.0) {
                     packet = .{ .entity_teleport = .{
                         .entity_id = self.eid,

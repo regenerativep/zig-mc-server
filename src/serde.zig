@@ -5,7 +5,7 @@ const testing = std.testing;
 const builtin = std.builtin;
 const Allocator = std.mem.Allocator;
 
-pub fn Num(comptime T: type, endian: std.builtin.Endian) type {
+pub fn Num(comptime T: type, comptime endian: std.builtin.Endian) type {
     const info = @typeInfo(T);
     if (info != .Int and info != .Float) {
         @compileError("expected an int or a float");
@@ -83,17 +83,17 @@ pub fn StructFieldSpecs(comptime UsedSpec: type, comptime Partial: type) [meta.f
 
 pub fn StructUserType(comptime Partial: type, comptime Specs: []const type) type {
     const info = @typeInfo(Partial).Struct;
-    var fields: [info.fields.len]builtin.TypeInfo.StructField = undefined;
+    var fields: [info.fields.len]builtin.Type.StructField = undefined;
     inline for (info.fields) |*field, i| {
         var f = field.*;
         f.field_type = Specs[i].UserType;
         f.default_value = null;
         fields[i] = f;
     }
-    return @Type(builtin.TypeInfo{ .Struct = .{
+    return @Type(builtin.Type{ .Struct = .{
         .layout = info.layout,
         .fields = &fields,
-        .decls = &[_]builtin.TypeInfo.Declaration{},
+        .decls = &[_]builtin.Type.Declaration{},
         .is_tuple = info.is_tuple,
     } });
 }
@@ -185,14 +185,14 @@ pub fn isIntType(comptime T: type) bool {
     }
 }
 
-pub fn Enum(comptime UsedSpec: type, comptime PartialTag: type, comptime UserType: type) type {
-    assert(@typeInfo(UserType) == .Enum);
+pub fn Enum(comptime UsedSpec: type, comptime PartialTag: type, comptime user_type: type) type {
+    assert(@typeInfo(user_type) == .Enum);
     return struct {
         pub const TagType = UsedSpec.Spec(PartialTag);
         comptime {
             assert(@typeInfo(TagType.UserType) == .Int);
         }
-        pub const UserType = UserType;
+        pub const UserType = user_type;
         pub fn getInt(self: UserType) TagType.UserType {
             return @intCast(TagType.UserType, @enumToInt(self));
         }
@@ -223,17 +223,17 @@ pub fn UnionSpecs(comptime UsedSpec: type, comptime PartialUnion: type) [meta.fi
 
 pub fn UnionUserType(comptime Partial: type, comptime Specs: []const type) type {
     const info = @typeInfo(Partial).Union;
-    var fields: [info.fields.len]builtin.TypeInfo.UnionField = undefined;
+    var fields: [info.fields.len]builtin.Type.UnionField = undefined;
     inline for (info.fields) |*field, i| {
         var f = field.*;
         f.field_type = Specs[i].UserType;
         fields[i] = f;
     }
-    return @Type(builtin.TypeInfo{ .Union = .{
+    return @Type(builtin.Type{ .Union = .{
         .layout = info.layout,
         .tag_type = info.tag_type,
         .fields = &fields,
-        .decls = &[_]std.builtin.TypeInfo.Declaration{},
+        .decls = &[_]std.builtin.Type.Declaration{},
     } });
 }
 
@@ -254,7 +254,7 @@ pub fn Union(comptime UsedSpec: type, comptime PartialUnion: type) type {
                 return @intCast(IntType, @enumToInt(@field(meta.Tag(UserType), info.Struct.fields[0].name)));
             }
         }
-        fn tagEnumField(comptime i: comptime_int) builtin.TypeInfo.EnumField {
+        fn tagEnumField(comptime i: comptime_int) builtin.Type.EnumField {
             return meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
         }
         pub fn write(self: anytype, writer: anytype) !void {
@@ -294,7 +294,6 @@ pub fn Union(comptime UsedSpec: type, comptime PartialUnion: type) type {
         pub fn deinit(self: UserType, alloc: Allocator) void {
             const tag_int = getInt(self);
             inline for (meta.fields(UserType)) |field, i| {
-                _ = field;
                 //const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
                 const enum_field = tagEnumField(i);
                 if (enum_field.value == tag_int) {
@@ -308,7 +307,6 @@ pub fn Union(comptime UsedSpec: type, comptime PartialUnion: type) type {
             if (info == .Union) {
                 const tag_int = getInt(self);
                 inline for (meta.fields(UserType)) |field, i| {
-                    _ = field;
                     //const enum_field = meta.fieldInfo(meta.Tag(UserType), @intToEnum(meta.FieldEnum(meta.Tag(UserType)), i));
                     const enum_field = tagEnumField(i);
                     if (enum_field.value == tag_int) {
@@ -541,10 +539,8 @@ pub const Remaining = struct {
         defer data.deinit(); // should be same function as an errdefer here; if successful, there shouldnt be any memory to deinit
         var buf: [1024]u8 = undefined;
         while (true) {
-            const len = reader.read(&buf) catch |err| if (err == error.ReadTooFar) 0 else return err;
-            if (len == 0) {
-                break;
-            }
+            const len = reader.read(&buf) catch |err| if (err == error.ReadTooFar) break else return err;
+
             try data.appendSlice(buf[0..len]);
         }
         return data.toOwnedSlice();
