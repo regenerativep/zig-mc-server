@@ -1,28 +1,14 @@
 # zig-mc-server
 
-This is a Minecraft server written in the programming language Zig.
+A 1.20.2 Minecraft server in Zig. You can currently join and see other players move
+around.
 
-The goal of this project is not necessarily to make a Minecraft server, but rather to develop the protocol library and other important parts of a Minecraft server for future projects.
+Uses [zigmcp](https://github.com/regenerativep/zigmcp) for the protocol implementation
+and [libxev](https://github.com/mitchellh/libxev) for non-blocking networking.
 
-At the moment, a player can join the server, see other players move around, and type in chat.
+## Building
 
-Your server IP localhost:25400
-
-## building
-
-I use git submodules, sorry
-
-`git clone --recurse-submodules https://github.com/regenerativep/zig-mc-server`
-
-You need to get a `blocks.json` report from a Minecraft server jar. Grab a server jar and run:
-
-`java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --output data`
-
-Make a `src/gen/` folder
-
-Run `zig run scripts/generate_blocks.zig`
-
-Finally `zig build run`
-
+Running the server should be a simple `zig build run`. No control over server
+configuration yet, so the server will just start on `127.0.0.1:25565`.
 
 

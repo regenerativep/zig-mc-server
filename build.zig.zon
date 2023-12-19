@@ -1,0 +1,21 @@
+.{
+    .name = "zig-mc-server",
+    .version = "0.0.0",
+    .minimum_zig_version = "0.12.0",
+    .dependencies = .{
+        .mcp = .{
+            .url = "https://github.com/regenerativep/zigmcp/archive/5bd7e62097cb2741b0f3063dabeaf824a1308527.tar.gz",
+            .hash = "1220ab6e948560483b98bfc010f01612404ba18ee70c34d900bf8bcec6942df51146",
+            //.path = "../zigmcp",
+        },
+        .libxev = .{
+            .url = "https://github.com/mitchellh/libxev/archive/7eada4333c36b3e16f4dc2abad707149ef7b6de5.tar.gz",
+            .hash = "1220be2c7b3f3a07b9150720140c7038f454a9ce0cbc5d303767c1e4a50856ec1b01",
+        },
+        .mpsc = .{
+            .url = "https://github.com/tensorush/zig-mpsc/archive/a07a90b8281261d2fb249e456d4b3fdd45901e24.tar.gz",
+            .hash = "12201c1062be01c9c6e66e7368fc411bdd2f667223907ab0a3f0f281fbcdbacf4e57",
+        },
+    },
+    .paths = .{""},
+}

@@ -1,42 +1,72 @@
 const std = @import("std");
-const zlib = @import("deps/zig-zlib/zlib.zig");
 
-pub fn build(b: *std.build.Builder) void {
-    // Standard target options allows the person running `zig build` to choose
-    // what target to build for. Here we do not override the defaults, which
-    // means any target is allowed, and the default is native. Other options
-    // for restricting supported target set are available.
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const mcp_mod = b.dependency("mcp", .{
+        .optimize = optimize,
+        .target = target,
+    }).module("mcp");
+    const xev_mod = b.dependency("libxev", .{
+        .optimize = optimize,
+        .target = target,
+    }).module("xev");
+    const mpsc_mod = b.dependency("mpsc", .{
+        .optimize = optimize,
+        .target = target,
+    }).module("mpsc");
 
-    const lib_zlib = zlib.create(b, target, mode);
+    const lib = b.addStaticLibrary(.{
+        .name = "zig-mc-server",
+        .root_source_file = .{ .path = "src/lib.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    lib.addModule("mcp", mcp_mod);
+    lib.addModule("xev", xev_mod);
+    lib.addModule("mpsc", mpsc_mod);
+    b.installArtifact(lib);
 
-    const exe = b.addExecutable("zig-mc-server", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
+    const exe = b.addExecutable(.{
+        .name = "zig-mc-server",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.single_threaded = true;
+    exe.addModule("mcp", mcp_mod);
+    exe.addModule("xev", xev_mod);
+    exe.addModule("mpsc", mpsc_mod);
+    b.installArtifact(exe);
 
-    lib_zlib.link(exe, .{ .import_name = "zlib" });
-    exe.addPackagePath("uuid6", "deps/uuid6-zig/src/Uuid.zig");
-
-    exe.install();
-    //exe.strip = true;
-
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    if (b.args) |args| run_cmd.addArgs(args);
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const exe_tests = b.addTest("src/main.zig");
-    exe_tests.setTarget(target);
-    exe_tests.setBuildMode(mode);
+    const lib_unit_tests = b.addTest(.{
+        .root_source_file = .{ .path = "src/lib.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    lib_unit_tests.addModule("mcp", mcp_mod);
+    lib_unit_tests.addModule("xev", xev_mod);
+    lib_unit_tests.addModule("mpsc", mpsc_mod);
+    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
+    const exe_unit_tests = b.addTest(.{
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_unit_tests.addModule("mcp", mcp_mod);
+    exe_unit_tests.addModule("xev", xev_mod);
+    exe_unit_tests.addModule("mpsc", mpsc_mod);
+    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&exe_tests.step);
+    test_step.dependOn(&run_lib_unit_tests.step);
+    test_step.dependOn(&run_exe_unit_tests.step);
 }
