@@ -1,6 +1,6 @@
 # zig-mc-server
 
-A 1.20.2 Minecraft server in Zig. You can currently join and see other players move
+A 1.20.4 Minecraft server in Zig. You can currently join and see other players move
 around.
 
 Uses [zigmcp](https://github.com/regenerativep/zigmcp) for the protocol implementation

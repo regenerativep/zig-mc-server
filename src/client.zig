@@ -1197,7 +1197,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             }
 
                             try self.sendPacket(mcv.P.CB, .{ .server_data = .{
-                                .motd = "{\"text\":\"wait dont go, come back!\"}",
+                                .motd = .{ .string = "wait dont go, come back!" },
                                 .icon = null,
                                 .enforces_secure_chat = false,
                             } });
@@ -1406,6 +1406,19 @@ pub fn tick(self: *Client) !void {
                         },
                     });
                 }
+
+                try self.sendPacket(mcv.P.CB, .{ .game_event = .{
+                    .start_waiting_for_level_chunks = 0,
+                } });
+                {
+                    self.server.current_tick_lock.lockShared();
+                    defer self.server.current_tick_lock.unlockShared();
+                    try self.sendPacket(mcv.P.CB, .{ .set_ticking_state = .{
+                        .tick_rate = @floatFromInt(self.server.target_tps),
+                        .is_frozen = false,
+                    } });
+                }
+                try self.sendPacket(mcv.P.CB, .{ .step_tick = 0 });
 
                 {
                     self.server.clients_lock.lockShared();
