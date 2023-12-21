@@ -4,6 +4,7 @@ const io = std.io;
 const mem = std.mem;
 const math = std.math;
 const Allocator = mem.Allocator;
+const Value = std.atomic.Value;
 const testing = std.testing;
 
 const xev = @import("xev");
@@ -51,9 +52,8 @@ pub const Server = struct {
     allocator: Allocator,
 
     tick_timer_comp: xev.Completion = .{},
-    target_tps: usize = 20,
-    current_tick_lock: std.Thread.RwLock = .{},
-    current_tick: usize = 0,
+    target_tps: Value(usize) = .{ .raw = 20 },
+    current_tick: Value(usize) = .{ .raw = 0 },
 
     keepalive_timer_comp: xev.Completion = .{},
 
@@ -113,7 +113,7 @@ pub const Server = struct {
                 continue;
             }
 
-            const res = switch (cl.state) {
+            const res = switch (cl.state.load(.Monotonic)) {
                 .configuration => cl.sendPacket(mcv.C.CB, .{
                     .keep_alive = keep_alive_id,
                 }),
@@ -148,7 +148,9 @@ pub const Server = struct {
         self.runTick() catch |e| {
             std.log.err("Failed to run a tick: \"{}\"", .{e});
         };
-        const desired_ms = @as(i64, @intCast(std.time.ms_per_s / self.target_tps));
+        const desired_ms = @as(i64, @intCast(
+            std.time.ms_per_s / self.target_tps.load(.Monotonic),
+        ));
         const time_taken = @max(0, std.time.milliTimestamp() - current_time);
         const time_to_take = @as(u64, @intCast(@max(0, desired_ms - time_taken)));
         //std.log.info(
@@ -166,12 +168,7 @@ pub const Server = struct {
     }
 
     pub fn runTick(self: *Server) !void {
-        {
-            self.current_tick_lock.lock();
-            defer self.current_tick_lock.unlock();
-            self.current_tick += 1;
-        }
-        //std.time.sleep(std.time.ns_per_ms * 1000);
+        _ = self.current_tick.fetchAdd(1, .Monotonic);
 
         {
             self.clients_lock.lockShared();
@@ -191,9 +188,8 @@ pub const Server = struct {
                 defer chunk.lock.unlock();
                 chunk.viewers += 1;
                 errdefer chunk.viewers -= 1;
-                pair.client.lock.lock();
-                defer pair.client.lock.unlock();
-                try pair.client.chunks_to_load.append(self.allocator, chunk);
+
+                try pair.client.chunks_to_load.writeItem(chunk);
             }
         }
 
@@ -315,13 +311,14 @@ pub const Server = struct {
                 .address = undefined,
                 .server = self,
                 .arena = std.heap.ArenaAllocator.init(self.allocator),
+                .chunks_to_load = Client.ChunksToLoad.init(self.allocator),
             };
             self.clients_cleanup.push(&client.cleanup);
         }
 
         self.options_lock.lock();
         defer self.options_lock.unlock();
-        try client.init(stream, address, self);
+        client.init(stream, address, self);
     }
 
     pub fn init(self: *Server, address: net.Address) !void {
@@ -341,7 +338,7 @@ pub const Server = struct {
             .callback = acceptCb,
         };
         self.loop.add(&self.accept_comp);
-        self.loop.timer(&self.tick_timer_comp, 1000 / self.target_tps, self, tickCb);
+        self.loop.timer(&self.tick_timer_comp, 1000 / self.target_tps.raw, self, tickCb);
         self.loop.timer(&self.keepalive_timer_comp, KeepAliveTime, self, keepAliveCb);
         try self.loop.run(.until_done);
     }

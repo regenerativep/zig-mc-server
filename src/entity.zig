@@ -134,9 +134,7 @@ pub fn sendSpawn(self: *Self, cl: *Client) !void {
         .spawn_entity = .{
             .entity_id = @intCast(self.id),
             .entity_uuid = self.uuid,
-            // TODO: entity types
-            //  https://wiki.vg/Entity_metadata#Entities
-            .type = 122,
+            .type = .player,
             .position = .{
                 .x = self.position.x,
                 .y = self.position.y,

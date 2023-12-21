@@ -4,8 +4,8 @@
     .minimum_zig_version = "0.12.0",
     .dependencies = .{
         .mcp = .{
-            .url = "https://github.com/regenerativep/zigmcp/archive/35f827d8c3b67ea0e284d31b7930f678699640c1.tar.gz",
-            .hash = "1220862c9086046157b0d5608ba167a80e771216d4900a55bbe5917d5ae48d55d137",
+            .url = "https://github.com/regenerativep/zigmcp/archive/6e39432c23d943c241c89b322e65d4efb0863421.tar.gz",
+            .hash = "12204d99c9a200f9b91697aec1f61f7fec9b417ff2e2adbd4245d719b4652cd4956b",
             //.path = "../zigmcp",
         },
         .libxev = .{

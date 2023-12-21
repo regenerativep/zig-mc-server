@@ -4,6 +4,7 @@ const io = std.io;
 const mem = std.mem;
 const math = std.math;
 const Allocator = mem.Allocator;
+const Value = std.atomic.Value;
 const testing = std.testing;
 
 const xev = @import("xev");
@@ -24,6 +25,10 @@ const Position = @import("lib.zig").Position;
 const Entity = @import("entity.zig");
 
 const XevClient = @import("xevclient.zig").XevClient;
+
+const DefaultRegistry = @import("registry.zig").DefaultRegistry;
+
+const QueuedSpsc = @import("spsc.zig").QueuedSpsc;
 
 const Client = @This();
 
@@ -71,496 +76,6 @@ pub const PacketSM = union(enum) {
         self.* = undefined;
     }
 };
-
-// damage type js gen
-//for(let i = 0; i < data.length; i += 1) {
-//    let item = data[i];
-//    console.log(".{");
-//    console.log(".name = \"" + item.name + "\",");
-//    console.log(".id = " + item.id + ",");
-//    console.log(".element = .{");
-//    console.log(".message_id = \"" + item.element.message_id + "\",");
-//    console.log(".scaling = ." + item.element.scaling + ",");
-//    console.log(".exhaustion = " + item.element.exhaustion + ",");
-//    if(typeof item.effects !== "undefined") {
-//        console.log(".effects = ." + item.element.effects + ",");
-//    }
-//    if(typeof item.death_message_type !== "undefined") {
-//        console.log(".death_message_type = ." + item.element.death_message_type + ",");
-//    }
-//    console.log("},");
-//    console.log("},");
-//}
-pub const DefaultRegistry = mcv.RegistryData.UT{
-    .trim_material = .{ .value = &.{} },
-    .trim_pattern = .{ .value = &.{} },
-    .damage_type = .{ .value = &.{
-        .{
-            .name = "minecraft:arrow",
-            .id = 0,
-            .element = .{
-                .message_id = "arrow",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:bad_respawn_point",
-            .id = 1,
-            .element = .{
-                .message_id = "badRespawnPoint",
-                .scaling = .always,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:cactus",
-            .id = 2,
-            .element = .{
-                .message_id = "cactus",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:cramming",
-            .id = 3,
-            .element = .{
-                .message_id = "cramming",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:dragon_breath",
-            .id = 4,
-            .element = .{
-                .message_id = "dragonBreath",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:drown",
-            .id = 5,
-            .element = .{
-                .message_id = "drown",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:dry_out",
-            .id = 6,
-            .element = .{
-                .message_id = "dryout",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:explosion",
-            .id = 7,
-            .element = .{
-                .message_id = "explosion",
-                .scaling = .always,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:fall",
-            .id = 8,
-            .element = .{
-                .message_id = "fall",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:falling_anvil",
-            .id = 9,
-            .element = .{
-                .message_id = "anvil",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:falling_block",
-            .id = 10,
-            .element = .{
-                .message_id = "fallingBlock",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:falling_stalactite",
-            .id = 11,
-            .element = .{
-                .message_id = "fallingStalactite",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:fireball",
-            .id = 12,
-            .element = .{
-                .message_id = "fireball",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:fireworks",
-            .id = 13,
-            .element = .{
-                .message_id = "fireworks",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:fly_into_wall",
-            .id = 14,
-            .element = .{
-                .message_id = "flyIntoWall",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:freeze",
-            .id = 15,
-            .element = .{
-                .message_id = "freeze",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:generic",
-            .id = 16,
-            .element = .{
-                .message_id = "generic",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:generic_kill",
-            .id = 17,
-            .element = .{
-                .message_id = "genericKill",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:hot_floor",
-            .id = 18,
-            .element = .{
-                .message_id = "hotFloor",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:in_fire",
-            .id = 19,
-            .element = .{
-                .message_id = "inFire",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:in_wall",
-            .id = 20,
-            .element = .{
-                .message_id = "inWall",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:indirect_magic",
-            .id = 21,
-            .element = .{
-                .message_id = "indirectMagic",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:lava",
-            .id = 22,
-            .element = .{
-                .message_id = "lava",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:lightning_bolt",
-            .id = 23,
-            .element = .{
-                .message_id = "lightningBolt",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:magic",
-            .id = 24,
-            .element = .{
-                .message_id = "magic",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:mob_attack",
-            .id = 25,
-            .element = .{
-                .message_id = "mob",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:mob_attack_no_aggro",
-            .id = 26,
-            .element = .{
-                .message_id = "mob",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:mob_projectile",
-            .id = 27,
-            .element = .{
-                .message_id = "mob",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:on_fire",
-            .id = 28,
-            .element = .{
-                .message_id = "onFire",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:out_of_world",
-            .id = 29,
-            .element = .{
-                .message_id = "outOfWorld",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:outside_border",
-            .id = 30,
-            .element = .{
-                .message_id = "outsideBorder",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:player_attack",
-            .id = 31,
-            .element = .{
-                .message_id = "player",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:player_explosion",
-            .id = 32,
-            .element = .{
-                .message_id = "explosion.player",
-                .scaling = .always,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:sonic_boom",
-            .id = 33,
-            .element = .{
-                .message_id = "sonic_boom",
-                .scaling = .always,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:stalagmite",
-            .id = 34,
-            .element = .{
-                .message_id = "stalagmite",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:starve",
-            .id = 35,
-            .element = .{
-                .message_id = "starve",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:sting",
-            .id = 36,
-            .element = .{
-                .message_id = "sting",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:sweet_berry_bush",
-            .id = 37,
-            .element = .{
-                .message_id = "sweetBerryBush",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:thorns",
-            .id = 38,
-            .element = .{
-                .message_id = "thorns",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:thrown",
-            .id = 39,
-            .element = .{
-                .message_id = "thrown",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:trident",
-            .id = 40,
-            .element = .{
-                .message_id = "trident",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:unattributed_fireball",
-            .id = 41,
-            .element = .{
-                .message_id = "onFire",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-        .{
-            .name = "minecraft:wither",
-            .id = 42,
-            .element = .{
-                .message_id = "wither",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0,
-            },
-        },
-        .{
-            .name = "minecraft:wither_skull",
-            .id = 43,
-            .element = .{
-                .message_id = "witherSkull",
-                .scaling = .when_caused_by_living_non_player,
-                .exhaustion = 0.1,
-            },
-        },
-    } },
-    .biome = .{ .value = &.{.{
-        .name = "minecraft:plains",
-        .id = 0,
-        .element = .{
-            .has_precipitation = true,
-            .temperature = 0.8,
-            .downfall = 0.4,
-            .effects = .{
-                .sky_color = 0x78A7FF,
-                .water_fog_color = 0x050533,
-                .fog_color = 0xC0D8FF,
-                .water_color = 0x3F76E4,
-                .mood_sound = .{
-                    .tick_delay = 6000,
-                    .offset = 2.0,
-                    .sound = "minecraft:ambient.cave",
-                    .block_search_extent = 8,
-                },
-            },
-        },
-    }} },
-    .chat_type = .{
-        .value = &.{.{
-            .name = "minecraft:chat",
-            .id = 0,
-            .element = .{
-                .chat = .{
-                    .translation_key = "chat.type.text",
-                    .parameters = &.{ .sender, .content },
-                },
-                .narration = .{
-                    .translation_key = "chat.type.text.narrate",
-                    .parameters = &.{ .sender, .content },
-                },
-            },
-        }},
-    },
-    .dimension_type = .{ .value = &.{.{
-        .name = "minecraft:overworld",
-        .id = 0,
-        .element = .{
-            .piglin_safe = false,
-            .natural = true,
-            .ambient_light = 0.0,
-            .monster_spawn_block_light_limit = 0,
-            .infiniburn = "#minecraft:infiniburn_overworld",
-            .respawn_anchor_works = false,
-            .has_skylight = true,
-            .bed_works = true,
-            .effects = .overworld,
-            .has_raids = true,
-            .logical_height = mcp.chunk.HEIGHT,
-            .coordinate_scale = 1.0,
-            .monster_spawn_light_level = .{ .compound = .{
-                .type = .uniform,
-                .value = .{ .min_inclusive = 0, .max_inclusive = 7 },
-            } },
-            .min_y = mcp.chunk.MIN_Y,
-            .ultrawarm = false,
-            .has_ceiling = false,
-            .height = mcp.chunk.HEIGHT,
-        },
-    }} },
-};
-
-test "default registry" {
-    @setEvalBranchQuota(10_000);
-    try mcp.nbt.doDynamicTestOnValue(mcv.RegistryData, DefaultRegistry, true, false);
-}
 
 pub const VisibleChunks = struct {
     pub const Rect = struct {
@@ -727,6 +242,7 @@ pub const VisibleChunks = struct {
 
 pub const WriteBuffer = std.fifo.LinearFifo(u8, .Dynamic);
 pub const SendBuffer = std.fifo.LinearFifo(u8, .{ .Static = 1024 });
+pub const ChunksToLoad = std.fifo.LinearFifo(*ChunkColumn, .Dynamic);
 
 cleanup: Mpsc.Node = undefined,
 
@@ -771,21 +287,34 @@ inner: XevClient(struct {
 }),
 address: net.Address,
 
-packet: PacketSM = .{ .waiting = .{} },
 server: *Server,
-state: enum {
+
+/// recv thread only
+packet: PacketSM = .{ .waiting = .{} },
+/// modified by recv thread only
+/// readable outside of recv thread
+state: Value(enum(u8) {
     handshake,
     status,
     login,
     configuration,
     play,
-} = .handshake,
+}) = .{ .raw = .handshake },
+/// recv thread only
 arena: std.heap.ArenaAllocator,
 
+/// locked by `lock`
 visible_chunks: VisibleChunks = .{},
-chunks_to_load: std.ArrayListUnmanaged(*ChunkColumn) = .{},
+
+/// accessed only during tick
+chunks_to_load: ChunksToLoad,
+
+/// write: recv thread
+/// read: tick thread
+messages: QueuedSpsc(std.BoundedArray(u8, 256), 3) = .{},
+
 desired_chunks_per_tick: usize = 25,
-initial_chunks: ?usize = undefined,
+initial_chunks: ?usize = null,
 
 // TODO: track keep alive ids. might be able to make them not allocate as well
 last_keep_alive: i64 = math.maxInt(i64),
@@ -800,14 +329,15 @@ pub fn init(
     stream: net.Stream,
     address: net.Address,
     server: *Server,
-) !void {
+) void {
     self.* = .{
         .inner = undefined,
         .address = address,
         .server = server,
         .arena = std.heap.ArenaAllocator.init(server.allocator),
+        .chunks_to_load = ChunksToLoad.init(server.allocator),
     };
-    try self.inner.init(&server.loop, stream);
+    self.inner.init(&server.loop, stream);
 }
 
 pub fn updateState(self: *Client, data: []const u8) !void {
@@ -821,17 +351,17 @@ pub fn updateState(self: *Client, data: []const u8) !void {
             }
             var stream = io.fixedBufferStream(self.packet.ready.data);
             const reader = stream.reader();
-            switch (self.state) {
+            switch (self.state.load(.Monotonic)) {
                 .handshake => {
                     var packet: mcv.H.SB.UT = undefined;
                     try mcv.H.SB.read(reader, &packet, ar);
                     if (packet != .handshake) return;
                     switch (packet.handshake.next_state) {
                         .status => {
-                            self.state = .status;
+                            self.state.store(.status, .Monotonic);
                         },
                         .login => {
-                            self.state = .login;
+                            self.state.store(.login, .Monotonic);
                         },
                     }
                 },
@@ -893,7 +423,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             } });
                         },
                         .login_acknowledged => {
-                            self.state = .configuration;
+                            self.state.store(.configuration, .Monotonic);
 
                             {
                                 self.lock.lockShared();
@@ -959,7 +489,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                         },
                         .plugin_message => {},
                         .finish_configuration => {
-                            self.state = .play;
+                            self.state.store(.play, .Monotonic);
 
                             self.lock.lock();
                             defer self.lock.unlock();
@@ -1032,7 +562,6 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                 .entity_id = @intCast(self.entity.?.id),
                                 .entity_status = .op_permission_0,
                             } });
-                            // TODO: commands
                             try self.sendPacket(mcv.P.CB, .{ .commands = .{
                                 .root_index = 0,
                                 .nodes = &.{.{
@@ -1104,7 +633,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                     );
                                     var i: usize = 0;
                                     var iter = self.server.clients.iterator(0);
-                                    while (iter.next()) |cl| if (cl.isPlayNL()) {
+                                    while (iter.next()) |cl| if (cl.isPlay()) {
                                         // send new player info to every player
                                         try cl.sendPacket(mcv.P.CB, .{
                                             .player_info_update = .{
@@ -1146,10 +675,11 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                         defer cl.lock.unlockShared();
 
                                         actions[i] = .{
-                                            .uuid = if (cl.entity) |e|
-                                                e.uuid
-                                            else
-                                                mem.zeroes(mcv.Uuid.UT),
+                                            .uuid = if (cl.entity) |e| blk2: {
+                                                e.lock.lockShared();
+                                                defer e.lock.unlockShared();
+                                                break :blk2 e.uuid;
+                                            } else mem.zeroes(mcv.Uuid.UT),
                                             .add_player = .{
                                                 .name = cl.name,
                                                 .properties = &.{},
@@ -1212,11 +742,8 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                 .warning_blocks = 8,
                                 .warning_time = 0,
                             } });
-                            const current_tick = blk: {
-                                self.server.current_tick_lock.lockShared();
-                                defer self.server.current_tick_lock.unlockShared();
-                                break :blk self.server.current_tick;
-                            };
+                            const current_tick =
+                                self.server.current_tick.load(.Monotonic);
                             try self.sendPacket(mcv.P.CB, .{ .update_time = .{
                                 .world_age = @intCast(current_tick),
                                 .time_of_day = @intCast(current_tick),
@@ -1302,6 +829,13 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                 entity.on_ground = d.on_ground;
                             }
                         },
+                        .chat_message => |d| {
+                            try self.messages.enqueue(
+                                self.server.allocator,
+                                std.BoundedArray(u8, 256).fromSlice(d.message) catch
+                                    unreachable,
+                            );
+                        },
                         else => {},
                     }
                 },
@@ -1311,25 +845,28 @@ pub fn updateState(self: *Client, data: []const u8) !void {
 }
 
 pub fn tick(self: *Client) !void {
-    if (!self.inner.alive.load(.Monotonic))
-        return;
-    {
-        self.lock.lockShared();
-        defer self.lock.unlockShared();
-        if (self.state != .play) return;
-    }
+    if (!self.isPlay()) return;
+
     try self.sendPacket(mcv.P.CB, .bundle_delimeter);
 
-    self.lock.lockShared();
-    defer self.lock.unlockShared();
     try self.sendChunks(true);
-    if (self.chunks_to_load.items.len > 0) {
-        const total_chunks_to_load =
-            @min(self.desired_chunks_per_tick, self.chunks_to_load.items.len);
+
+    if (self.chunks_to_load.count > 0) {
+        const total_chunks_to_load = blk: {
+            self.lock.lockShared();
+            defer self.lock.unlockShared();
+            break :blk @min(
+                self.desired_chunks_per_tick,
+                self.chunks_to_load.count,
+            );
+        };
+
         try self.sendPacket(mcv.P.CB, .chunk_batch_start);
-        for (self.chunks_to_load.items[self.chunks_to_load.items.len -
-            total_chunks_to_load ..]) |chunk|
-        {
+
+        var chunks_loaded: usize = 0;
+        while (chunks_loaded < total_chunks_to_load) : (chunks_loaded += 1) {
+            const chunk = self.chunks_to_load.readItem() orelse break;
+
             chunk.lock.lock();
             defer chunk.lock.unlock();
 
@@ -1347,7 +884,6 @@ pub fn tick(self: *Client) !void {
                 },
             });
         }
-        self.chunks_to_load.items.len -= total_chunks_to_load;
 
         if (self.initial_chunks) |*initial_chunks| {
             if (total_chunks_to_load >= initial_chunks.*) {
@@ -1410,14 +946,12 @@ pub fn tick(self: *Client) !void {
                 try self.sendPacket(mcv.P.CB, .{ .game_event = .{
                     .start_waiting_for_level_chunks = 0,
                 } });
-                {
-                    self.server.current_tick_lock.lockShared();
-                    defer self.server.current_tick_lock.unlockShared();
-                    try self.sendPacket(mcv.P.CB, .{ .set_ticking_state = .{
-                        .tick_rate = @floatFromInt(self.server.target_tps),
-                        .is_frozen = false,
-                    } });
-                }
+                try self.sendPacket(mcv.P.CB, .{ .set_ticking_state = .{
+                    .tick_rate = @floatFromInt(
+                        self.server.target_tps.load(.Acquire),
+                    ),
+                    .is_frozen = false,
+                } });
                 try self.sendPacket(mcv.P.CB, .{ .step_tick = 0 });
 
                 {
@@ -1427,6 +961,8 @@ pub fn tick(self: *Client) !void {
                     var iter = self.server.clients.iterator(0);
                     while (iter.next()) |cl| {
                         if (cl != self and cl.isPlay()) {
+                            cl.lock.lockShared();
+                            defer cl.lock.unlockShared();
                             if (cl.entity) |e| {
                                 e.lock.lockShared();
                                 defer e.lock.unlockShared();
@@ -1442,6 +978,37 @@ pub fn tick(self: *Client) !void {
         try self.sendPacket(mcv.P.CB, .{
             .chunk_batch_finished = @intCast(total_chunks_to_load),
         });
+    }
+
+    self.lock.lockShared();
+    defer self.lock.unlockShared();
+    const uuid = blk: {
+        if (self.entity) |entity| {
+            entity.lock.lockShared();
+            defer entity.lock.unlockShared();
+            break :blk entity.uuid;
+        }
+        break :blk mem.zeroes(mcv.Uuid.UT);
+    };
+    while (self.messages.dequeue()) |msg| {
+        self.server.clients_lock.lockShared();
+        defer self.server.clients_lock.unlockShared();
+        var iter = self.server.clients.iterator(0);
+        while (iter.next()) |cl| if (cl.isPlay()) {
+            try cl.sendPacket(mcv.P.CB, .{
+                .player_chat_message = .{
+                    .sender = uuid,
+                    .index = 0, // TODO: what is this
+                    .message = msg.constSlice(),
+                    .timestamp = @intCast(std.time.milliTimestamp()),
+                    .salt = 0,
+                    .previous_messages = &.{},
+                    .filter = .pass_through,
+                    .chat_type = 0,
+                    .sender_name = .{ .string = self.name },
+                },
+            });
+        };
     }
 }
 
@@ -1476,16 +1043,16 @@ pub fn silentWriter(writer: anytype) SilentWriter(@TypeOf(writer)) {
 pub fn sendPacket(self: *Client, comptime ST: type, packet: ST.UT) !void {
     const payload_size = ST.size(packet);
     const packet_size = payload_size + VarI32.size(@intCast(payload_size));
-    if (ST != mcv.P.CB or packet != .bundle_delimeter) {
-        //std.debug.print(
-        //    "writing packet \"{s}\" ({}, {})\n",
-        //    .{
-        //        @tagName(packet),
-        //        packet_size,
-        //        payload_size,
-        //    },
-        //);
-    }
+    //if (ST != mcv.P.CB or packet != .bundle_delimeter) {
+    //std.debug.print(
+    //    "writing packet \"{s}\" ({}, {})\n",
+    //    .{
+    //        @tagName(packet),
+    //        packet_size,
+    //        payload_size,
+    //    },
+    //);
+    //}
     {
         self.inner.buffer.swap_lock.lockShared();
         defer self.inner.buffer.swap_lock.unlockShared();
@@ -1520,6 +1087,7 @@ pub fn sendPacket(self: *Client, comptime ST: type, packet: ST.UT) !void {
     self.inner.submitSend(&self.server.loop);
 }
 
+/// TODO: this is more like request rather than send
 /// self.lock should be locked
 pub fn sendChunks(self: *Client, send_center: bool) !void {
     const res = blk: {
@@ -1573,13 +1141,8 @@ pub fn sendChunks(self: *Client, send_center: bool) !void {
     //}
 }
 
-pub fn isPlayNL(self: *Client) bool {
-    return self.isAlive() and self.state == .play;
-}
 pub fn isPlay(self: *Client) bool {
-    self.lock.lockShared();
-    defer self.lock.unlockShared();
-    return self.isPlayNL();
+    return self.isAlive() and self.state.load(.Monotonic) == .play;
 }
 pub fn readyForCleanup(self: *Client) bool {
     return !self.isAlive() and self.inner.buffer.isEmpty();
@@ -1597,7 +1160,9 @@ pub fn stop(self: *Client) void {
 }
 
 pub fn deinit(self: *Client) void {
+    self.messages.deinit();
     self.visible_chunks.deinit(self.server.allocator);
+    self.chunks_to_load.deinit();
     if (self.info) |inf| self.server.allocator.free(inf.locale);
     if (self.entity) |e| self.server.returnEntity(e);
     if (self.name.len > 0) self.server.allocator.free(self.name);

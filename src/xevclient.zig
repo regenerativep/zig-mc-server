@@ -79,7 +79,7 @@ pub fn XevClient(comptime Callbacks: type) type {
 
         const Self = @This();
 
-        pub fn init(self: *Self, loop: *xev.Loop, stream: net.Stream) !void {
+        pub fn init(self: *Self, loop: *xev.Loop, stream: net.Stream) void {
             self.* = .{
                 .stream = stream,
                 .recv_comp = .{
@@ -92,8 +92,6 @@ pub fn XevClient(comptime Callbacks: type) type {
                 },
             };
             loop.add(&self.recv_comp);
-            // TODO: do we need submit?
-            try loop.submit();
         }
 
         pub fn isAlive(self: *const Self) bool {
