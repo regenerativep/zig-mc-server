@@ -28,6 +28,7 @@ const XevClient = @import("xevclient.zig").XevClient;
 
 const DefaultRegistry = @import("registry.zig").DefaultRegistry;
 
+const Spsc = @import("spsc.zig").Spsc;
 const QueuedSpsc = @import("spsc.zig").QueuedSpsc;
 
 const Client = @This();
@@ -244,6 +245,8 @@ pub const WriteBuffer = std.fifo.LinearFifo(u8, .Dynamic);
 pub const SendBuffer = std.fifo.LinearFifo(u8, .{ .Static = 1024 });
 pub const ChunksToLoad = std.fifo.LinearFifo(*ChunkColumn, .Dynamic);
 
+pub const NullKeepAlive = std.math.maxInt(i64);
+
 cleanup: Mpsc.Node = undefined,
 
 inner: XevClient(struct {
@@ -316,8 +319,14 @@ messages: QueuedSpsc(std.BoundedArray(u8, 256), 3) = .{},
 desired_chunks_per_tick: usize = 25,
 initial_chunks: ?usize = null,
 
-// TODO: track keep alive ids. might be able to make them not allocate as well
-last_keep_alive: i64 = math.maxInt(i64),
+/// write: keepalive thread
+/// read: recv thread
+keep_alives: Spsc(i64, math.log2_int_ceil(usize, Server.MaxKeepAlives)) = .{},
+// doing `NullKeepAlive` cause im guessing ?i64 is not suitable for atomics
+oldest_keep_alive: std.atomic.Value(i64) = .{ .raw = NullKeepAlive },
+
+/// lock `lock`
+next_teleport_id: i32 = 1,
 
 lock: std.Thread.RwLock = .{},
 name: []const u8 = "",
@@ -351,17 +360,17 @@ pub fn updateState(self: *Client, data: []const u8) !void {
             }
             var stream = io.fixedBufferStream(self.packet.ready.data);
             const reader = stream.reader();
-            switch (self.state.load(.Monotonic)) {
+            switch (self.state.load(.Acquire)) {
                 .handshake => {
                     var packet: mcv.H.SB.UT = undefined;
                     try mcv.H.SB.read(reader, &packet, ar);
                     if (packet != .handshake) return;
                     switch (packet.handshake.next_state) {
                         .status => {
-                            self.state.store(.status, .Monotonic);
+                            self.state.store(.status, .Release);
                         },
                         .login => {
-                            self.state.store(.login, .Monotonic);
+                            self.state.store(.login, .Release);
                         },
                     }
                 },
@@ -423,13 +432,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             } });
                         },
                         .login_acknowledged => {
-                            self.state.store(.configuration, .Monotonic);
-
-                            {
-                                self.lock.lockShared();
-                                defer self.lock.unlockShared();
-                                self.last_keep_alive = std.time.milliTimestamp();
-                            }
+                            self.state.store(.configuration, .Release);
 
                             try self.sendPacket(mcv.C.CB, .{ .plugin_message = .{
                                 .channel = "minecraft:brand",
@@ -489,7 +492,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                         },
                         .plugin_message => {},
                         .finish_configuration => {
-                            self.state.store(.play, .Monotonic);
+                            self.state.store(.play, .Release);
 
                             self.lock.lock();
                             defer self.lock.unlock();
@@ -618,10 +621,11 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                             .pitch = false,
                                             .yaw = false,
                                         },
-                                        // TODO: track and queue teleports
-                                        .teleport_id = 1,
+                                        // TODO: queue teleports
+                                        .teleport_id = self.next_teleport_id,
                                     },
                                 });
+                                self.next_teleport_id += 1;
 
                                 const other_players = blk: {
                                     self.server.clients_lock.lockShared();
@@ -774,11 +778,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             self.initial_chunks = (8 + 8 + 1) * (8 + 8 + 1);
                             try self.sendChunks(true);
                         },
-                        .keep_alive => {
-                            self.lock.lockShared();
-                            defer self.lock.unlockShared();
-                            self.last_keep_alive = std.time.milliTimestamp();
-                        },
+                        .keep_alive => |d| self.receiveKeepAlive(d),
                         else => {},
                     }
                 },
@@ -792,11 +792,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             self.desired_chunks_per_tick =
                                 math.lossyCast(usize, math.ceil(d.chunks_per_tick));
                         },
-                        .keep_alive => {
-                            self.lock.lockShared();
-                            defer self.lock.unlockShared();
-                            self.last_keep_alive = std.time.milliTimestamp();
-                        },
+                        .keep_alive => |d| self.receiveKeepAlive(d),
                         inline .set_player_position,
                         .set_player_rotation,
                         .set_player_position_and_rotation,
@@ -836,10 +832,32 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                     unreachable,
                             );
                         },
-                        else => {},
+                        else => {
+                            std.log.debug(
+                                "Unhandled packet \"{s}\"",
+                                .{@tagName(packet)},
+                            );
+                        },
                     }
                 },
             }
+        }
+    }
+}
+
+pub fn receiveKeepAlive(self: *Client, value: i64) void {
+    while (true) {
+        if (self.keep_alives.depeek()) |v| {
+            if (v.* <= value) {
+                _ = self.keep_alives.dequeue();
+                continue;
+            } else {
+                self.oldest_keep_alive.store(v.*, .Release);
+                break;
+            }
+        } else {
+            self.oldest_keep_alive.store(NullKeepAlive, .Release);
+            break;
         }
     }
 }
@@ -916,10 +934,11 @@ pub fn tick(self: *Client) !void {
                                 .pitch = false,
                                 .yaw = false,
                             },
-                            // TODO: queue teleports, and track teleport ids
-                            .teleport_id = 11,
+                            // TODO: queue teleports
+                            .teleport_id = self.next_teleport_id,
                         },
                     });
+                    self.next_teleport_id += 1;
                 }
                 {
                     self.server.options_lock.lockShared();
@@ -1142,7 +1161,7 @@ pub fn sendChunks(self: *Client, send_center: bool) !void {
 }
 
 pub fn isPlay(self: *Client) bool {
-    return self.isAlive() and self.state.load(.Monotonic) == .play;
+    return self.isAlive() and self.state.load(.Acquire) == .play;
 }
 pub fn readyForCleanup(self: *Client) bool {
     return !self.isAlive() and self.inner.buffer.isEmpty();

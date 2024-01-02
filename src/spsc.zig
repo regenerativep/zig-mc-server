@@ -16,10 +16,17 @@ pub fn Spsc(comptime T: type, comptime log2_capacity: comptime_int) type {
             .bits = log2_capacity,
         } });
 
+        // TODO: doesnt this not need to be aligned? (not that it matters much since
+        //     everything else in here is) both enqueue and dequeue are regularly
+        //     accessing it anyway.
         buffer: [capacity]T align(cache_line) = undefined,
+        /// rw by dequeue, frugally read by enqueue
         head: Index align(cache_line) = 0,
+        /// rw by enqueue, frugally read by dequeue
         tail: Index align(cache_line) = 0,
+        /// rw by enqueue, enqueue's cache of head
         head_cache: Index align(cache_line) = 0,
+        /// rw by dequeue, dequeue's cache of tail
         tail_cache: Index align(cache_line) = 0,
 
         const Self = @This();
@@ -54,6 +61,34 @@ pub fn Spsc(comptime T: type, comptime log2_capacity: comptime_int) type {
             const value = self.buffer[head];
             @atomicStore(Index, &self.head, head +% 1, .Release);
             return value;
+        }
+
+        /// peek the value on the enqueue side
+        pub fn enpeek(self: *Self) ?*T {
+            const tail = @atomicLoad(Index, &self.tail, .Monotonic);
+
+            if (tail == self.head_cache) {
+                self.head_cache = @atomicLoad(Index, &self.head, .Acquire);
+                if (tail == self.head_cache) {
+                    return null;
+                }
+            }
+
+            return &self.buffer[tail];
+        }
+
+        // peek the value on the dequeue side
+        pub fn depeek(self: *Self) ?*T {
+            const head = @atomicLoad(Index, &self.head, .Monotonic);
+
+            if (head == self.tail_cache) {
+                self.tail_cache = @atomicLoad(Index, &self.tail, .Acquire);
+                if (head == self.tail_cache) {
+                    return null;
+                }
+            }
+
+            return &self.buffer[head];
         }
 
         pub inline fn isEmpty(self: *const Self) bool {

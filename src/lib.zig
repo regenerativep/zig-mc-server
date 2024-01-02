@@ -15,6 +15,8 @@ const mcp = @import("mcp");
 const mcio = mcp.packetio;
 const mcv = mcp.vlatest;
 
+pub const config = @import("config.zig");
+
 pub const Client = @import("client.zig");
 pub const Entity = @import("entity.zig");
 
@@ -38,6 +40,7 @@ pub const ChunkColumn = struct {
 pub const Server = struct {
     pub const KeepAliveTime = std.time.ms_per_s * 10;
     pub const KeepAliveMaxTime = std.time.ms_per_s * 30;
+    pub const MaxKeepAlives = Server.KeepAliveMaxTime / Server.KeepAliveTime + 1;
     pub const CleanupLL = std.SinglyLinkedList(void);
     pub const RequestedChunks = std.fifo.LinearFifo(
         struct { position: ChunkPosition, client: *Client },
@@ -94,26 +97,29 @@ pub const Server = struct {
             std.log.err("Keep alive timer error: \"{}\"", .{e});
         };
         const current_time = std.time.milliTimestamp();
-        const keep_alive_id = @as(i32, @bitCast(@as(u32, @truncate(
-            std.hash.Wyhash.hash(20, mem.asBytes(&current_time)),
-        ))));
+        //const keep_alive_id = @as(i32, @bitCast(@as(u32, @truncate(
+        //    std.hash.Wyhash.hash(20, mem.asBytes(&current_time)),
+        //))));
+        const keep_alive_id = current_time;
         self.clients_lock.lockShared();
         defer self.clients_lock.unlockShared();
         var iter = self.clients.iterator(0);
         while (iter.next()) |cl| if (cl.isAlive()) {
-            cl.lock.lockShared();
-            defer cl.lock.unlockShared();
-
-            if (cl.last_keep_alive != math.maxInt(i64) and
-                current_time - cl.last_keep_alive > KeepAliveMaxTime)
+            const oldest = cl.oldest_keep_alive.load(.Acquire);
+            if (oldest != Client.NullKeepAlive and
+                current_time - oldest > KeepAliveMaxTime)
             {
                 // disconnect client
-                std.log.info("No keep alive from {} in time", .{cl.address});
-                cl.inner.stop(&self.loop);
+                std.log.info("No keep alive from {} in time. Kicking", .{cl.address});
+                cl.lock.lockShared();
+                defer cl.lock.unlockShared();
+                cl.stop();
                 continue;
             }
 
-            const res = switch (cl.state.load(.Monotonic)) {
+            _ = cl.keep_alives.enqueue(keep_alive_id);
+            // TODO: this might not be thread safe enough
+            const res = switch (cl.state.load(.Acquire)) {
                 .configuration => cl.sendPacket(mcv.C.CB, .{
                     .keep_alive = keep_alive_id,
                 }),
