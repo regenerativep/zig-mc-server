@@ -61,9 +61,21 @@ pub const DoubleBuffer = struct {
     }
 };
 
+/// A stream client for a libxev loop.
+/// `Callbacks` should be a struct with the following functions:
+/// - `onRead(client: anytype, data: []const u8)`, called when data is received.
+///     `client` is a pointer to the XevClient. TODO: can we make it not anytype?
+///     Thread it is called on is whatever the libxev loop determines; assume it is
+///     on a different thread.
+/// - `onClose(client: anytype)`, called when the client has completely stopped, and
+///     it is safe to clean up.
 pub fn XevClient(comptime Callbacks: type) type {
     return struct {
         alive: std.atomic.Value(bool) = .{ .raw = true },
+
+        writing_active: std.atomic.Value(bool) = .{ .raw = false },
+        reading_active: std.atomic.Value(bool) = .{ .raw = true },
+        stop_queued: std.atomic.Value(bool) = .{ .raw = false },
 
         buffer: DoubleBuffer = .{},
 
@@ -72,13 +84,18 @@ pub fn XevClient(comptime Callbacks: type) type {
 
         recv_comp: xev.Completion,
         recv_cancel_comp: xev.Completion = undefined,
+        // TODO: would it be a good idea to make the recv buffer dynamic size?
         recv_buffer: [1024]u8 = undefined,
         recv_error: ?xev.ReadError = null,
+
+        close_comp: xev.Completion = undefined,
 
         stream: net.Stream,
 
         const Self = @This();
 
+        /// Initializes an uninitialized `XevClient`. Uses `loop` to add the
+        /// recv listener to the libxev loop.
         pub fn init(self: *Self, loop: *xev.Loop, stream: net.Stream) void {
             self.* = .{
                 .stream = stream,
@@ -98,6 +115,12 @@ pub fn XevClient(comptime Callbacks: type) type {
             return self.alive.load(.Acquire);
         }
 
+        /// If it is okay to send data.
+        pub inline fn canSend(self: *const Self) bool {
+            return self.alive.load(.Monotonic) and !self.stop_queued.load(.Monotonic);
+        }
+
+        /// Queues the given data for writing to the stream. Should be thread safe.
         pub fn send(
             self: *Self,
             a: Allocator,
@@ -107,8 +130,10 @@ pub fn XevClient(comptime Callbacks: type) type {
             try self.buffer.write(a, data);
             self.submitSend(loop);
         }
+
+        /// Queues writes to the event loop if not already queued.
         pub fn submitSend(self: *Self, loop: *xev.Loop) void {
-            if (!self.isAlive()) return;
+            if (!self.canSend()) return;
             self.send_lock.lock();
             defer self.send_lock.unlock();
             if (self.send_comp == null) {
@@ -140,10 +165,13 @@ pub fn XevClient(comptime Callbacks: type) type {
                     .userdata = self,
                     .callback = sendCb,
                 };
+                self.reading_active.store(true, .Release);
                 loop.add(&self.send_comp.?);
                 // TODO: how to handle undoing the add on submision failure? or is
                 //     submission error perhaps fatal to the loop? or should we just
                 //     leave the comp in the queue and try submitting later?
+                //
+                //     or do we event need the submit?
                 loop.submit() catch unreachable;
             }
         }
@@ -170,11 +198,18 @@ pub fn XevClient(comptime Callbacks: type) type {
                 self.send_comp = null;
                 self.send_lock.unlock();
 
-                self.stop(l);
+                self.writing_active.store(false, .Release);
+                if (self.reading_active.load(.Acquire)) {
+                    self.queueStop(l);
+                } else {
+                    self.close(l);
+                }
                 return .disarm;
             }
-            if (!self.isAlive()) {
-                self.stop(l);
+            // if reader is shut down, we are responsible for closing stream
+            if (!self.reading_active.load(.Acquire)) {
+                self.writing_active.store(false, .Release);
+                self.close(l);
                 return .disarm;
             }
 
@@ -184,12 +219,6 @@ pub fn XevClient(comptime Callbacks: type) type {
                 const active_buffer = &self.buffer.buffers[self.buffer.active_buffer];
                 active_buffer.lock.lockShared();
                 if (active_buffer.data.items.len > self.buffer.total_read) {
-                    //c.* = .{ .op = .{ .send = .{
-                    //    .fd = self.stream.handle,
-                    //    .buffer = .{
-                    //        .slice = active_buffer.data.items[self.buffer.total_read..],
-                    //    },
-                    //} } };
                     c.op.send = .{
                         .fd = self.stream.handle,
                         .buffer = .{
@@ -219,12 +248,6 @@ pub fn XevClient(comptime Callbacks: type) type {
                 const active_buffer = &self.buffer.buffers[self.buffer.active_buffer];
                 active_buffer.lock.lockShared();
                 if (active_buffer.data.items.len > 0) {
-                    //c.* = .{ .op = .{ .send = .{
-                    //    .fd = self.stream.handle,
-                    //    .buffer = .{
-                    //        .slice = active_buffer.data.items[self.buffer.total_read..],
-                    //    },
-                    //} } };
                     c.op.send = .{
                         .fd = self.stream.handle,
                         .buffer = .{
@@ -240,13 +263,14 @@ pub fn XevClient(comptime Callbacks: type) type {
             // no data in either buffer, stop sending
             self.send_lock.lock();
             self.send_comp = null;
+            self.writing_active.store(false, .Release);
             self.send_lock.unlock();
             return .disarm;
         }
 
         fn recvCb(
             self_: ?*anyopaque,
-            _: *xev.Loop,
+            l: *xev.Loop,
             _: *xev.Completion,
             r: xev.Result,
         ) xev.CallbackAction {
@@ -266,9 +290,13 @@ pub fn XevClient(comptime Callbacks: type) type {
                     },
                 }
                 Callbacks.onRead(self, &.{});
-                Callbacks.onClose(self);
-                self.alive.store(false, .Release);
-                self.stream.close();
+
+                self.reading_active.store(false, .Release);
+
+                // if writer is stopped, then we are responsible for closing stream
+                if (!self.writing_active.load(.Acquire)) {
+                    self.close(l);
+                }
                 return .disarm;
             }
         }
@@ -279,25 +307,52 @@ pub fn XevClient(comptime Callbacks: type) type {
             _: *xev.Completion,
             r: xev.CancelError!void,
         ) xev.CallbackAction {
-            //r catch |e| {
-            //    if (e != error.NotFound) {
-            //        unreachable;
-            //    }
-            //};
+            // OK for it not to find recv; recv might have stopped on its own
             r catch {};
             return .disarm;
         }
 
-        pub fn stop(self: *Self, loop: *xev.Loop) void {
-            loop.cancel(
-                &self.recv_comp,
-                &self.recv_cancel_comp,
-                void,
-                null,
-                recvCancelCb,
-            );
-            loop.add(&self.recv_cancel_comp);
+        fn closeCb(
+            self_: ?*anyopaque,
+            _: *xev.Loop,
+            _: *xev.Completion,
+            r: xev.Result,
+        ) xev.CallbackAction {
+            const self: *Self = @ptrCast(@alignCast(self_.?));
+
+            r.close catch {};
+
             self.alive.store(false, .Release);
+            Callbacks.onClose(self);
+
+            return .disarm;
+        }
+
+        pub fn close(self: *Self, loop: *xev.Loop) void {
+            self.close_comp = .{
+                .op = .{ .close = .{ .fd = self.stream.handle } },
+                .callback = closeCb,
+                .userdata = self,
+            };
+            loop.add(&self.close_comp);
+        }
+
+        /// Queues a stop, so that the stream will be stopped after all writes are
+        /// finished.
+        pub fn queueStop(self: *Self, loop: *xev.Loop) void {
+            if (self.stop_queued.swap(true, .AcqRel)) return;
+            if (!self.alive.load(.Acquire)) return;
+
+            if (self.reading_active.load(.Acquire)) {
+                loop.cancel(
+                    &self.recv_comp,
+                    &self.recv_cancel_comp,
+                    void,
+                    null,
+                    recvCancelCb,
+                );
+                loop.add(&self.recv_cancel_comp);
+            }
         }
 
         pub fn deinit(self: *Self, a: Allocator) void {

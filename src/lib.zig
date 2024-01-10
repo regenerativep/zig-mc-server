@@ -119,22 +119,24 @@ pub const Server = struct {
 
             _ = cl.keep_alives.enqueue(keep_alive_id);
             // TODO: this might not be thread safe enough
-            const res = switch (cl.state.load(.Acquire)) {
-                .configuration => cl.sendPacket(mcv.C.CB, .{
-                    .keep_alive = keep_alive_id,
-                }),
-                .play => cl.sendPacket(mcv.P.CB, .{
-                    .keep_alive = keep_alive_id,
-                }),
-                else => {},
-            };
-            // ok why do i need a variable, why cant i just catch right after switch
-            res catch |e| {
-                std.log.err(
-                    "Failed to send keep alive to {}: \"{}\"",
-                    .{ cl.address, e },
-                );
-            };
+            if (cl.inner.canSend()) {
+                const res = switch (cl.state.load(.Acquire)) {
+                    .configuration => cl.sendPacket(mcv.C.CB, .{
+                        .keep_alive = keep_alive_id,
+                    }),
+                    .play => cl.sendPacket(mcv.P.CB, .{
+                        .keep_alive = keep_alive_id,
+                    }),
+                    else => {},
+                };
+                // ok why do i need a variable, why cant i just catch right after switch
+                res catch |e| {
+                    std.log.err(
+                        "Failed to send keep alive to {}: \"{}\"",
+                        .{ cl.address, e },
+                    );
+                };
+            }
         };
         l.timer(c, KeepAliveTime, self_, keepAliveCb);
         return .disarm;
@@ -267,7 +269,7 @@ pub const Server = struct {
         self.clients_lock.lockShared();
         defer self.clients_lock.unlockShared();
         var iter = self.clients.iterator(0);
-        while (iter.next()) |cl| if (cl.isPlay()) {
+        while (iter.next()) |cl| if (cl.canSendPlay()) {
             cl.sendPacket(mcv.P.CB, .{
                 .remove_entities = &.{@intCast(id)},
             }) catch {}; // TODO: handle error?

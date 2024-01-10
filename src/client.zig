@@ -254,13 +254,8 @@ inner: XevClient(struct {
         const self = @fieldParentPtr(Client, "inner", self_);
         if (data.len == 0) {
             if (self.inner.recv_error) |e| {
-                std.log.err(
-                    "Connection to {} closed, error: \"{}\"",
-                    .{ self.address, e },
-                );
-            } else {
-                std.log.info("Connection to {} closed", .{self.address});
-            }
+                std.log.err("Read error to {}: \"{}\"", .{ self.address, e });
+            } else {}
         } else {
             self.updateState(data) catch |e| {
                 std.log.err("Error reading data from {}: \"{}\"", .{ self.address, e });
@@ -274,8 +269,10 @@ inner: XevClient(struct {
         self.server.clients_lock.lockShared();
         defer self.server.clients_lock.unlockShared();
 
+        std.log.debug("Connection to {} closed", .{self.address});
+
         var iter = self.server.clients.iterator(0);
-        while (iter.next()) |cl| if (cl.isPlay()) {
+        while (iter.next()) |cl| if (cl.canSendPlay()) {
             // TODO: error handle?
             if (cl.entity) |e| {
                 cl.sendPacket(mcv.P.CB, .{ .player_info_remove = &.{e.uuid} }) catch {};
@@ -284,8 +281,14 @@ inner: XevClient(struct {
             if (cl == self) continue;
         };
 
+        if (self.name.len > 0)
+            std.log.info("\"{s}\" disconnected", .{self.name});
+
+        if (self.entity) |e| {
+            self.entity = null;
+            self.server.returnEntity(e);
+        }
         self.server.clients_cleanup.push(&self.cleanup);
-        self.stop();
     }
 }),
 address: net.Address,
@@ -406,7 +409,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                         },
                         .ping_request => |d| {
                             try self.sendPacket(mcv.S.CB, .{ .ping_response = d });
-                            self.inner.stop(&self.server.loop);
+                            self.stop();
                         },
                     }
                 },
@@ -637,7 +640,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                     );
                                     var i: usize = 0;
                                     var iter = self.server.clients.iterator(0);
-                                    while (iter.next()) |cl| if (cl.isPlay()) {
+                                    while (iter.next()) |cl| if (cl.canSendPlay()) {
                                         // send new player info to every player
                                         try cl.sendPacket(mcv.P.CB, .{
                                             .player_info_update = .{
@@ -724,7 +727,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                 // send entity spawn to other clients
                                 var iter = self.server.clients.iterator(0);
                                 while (iter.next()) |cl| {
-                                    if (cl != self and cl.isPlay()) {
+                                    if (cl != self and cl.canSendPlay()) {
                                         try entity.sendSpawn(cl);
                                     }
                                 }
@@ -863,7 +866,7 @@ pub fn receiveKeepAlive(self: *Client, value: i64) void {
 }
 
 pub fn tick(self: *Client) !void {
-    if (!self.isPlay()) return;
+    if (!self.canSendPlay()) return;
 
     try self.sendPacket(mcv.P.CB, .bundle_delimeter);
 
@@ -979,7 +982,7 @@ pub fn tick(self: *Client) !void {
                     // send all other client entities to client
                     var iter = self.server.clients.iterator(0);
                     while (iter.next()) |cl| {
-                        if (cl != self and cl.isPlay()) {
+                        if (cl != self and cl.canSendPlay()) {
                             cl.lock.lockShared();
                             defer cl.lock.unlockShared();
                             if (cl.entity) |e| {
@@ -1013,7 +1016,7 @@ pub fn tick(self: *Client) !void {
         self.server.clients_lock.lockShared();
         defer self.server.clients_lock.unlockShared();
         var iter = self.server.clients.iterator(0);
-        while (iter.next()) |cl| if (cl.isPlay()) {
+        while (iter.next()) |cl| if (cl.canSendPlay()) {
             try cl.sendPacket(mcv.P.CB, .{
                 .player_chat_message = .{
                     .sender = uuid,
@@ -1160,22 +1163,22 @@ pub fn sendChunks(self: *Client, send_center: bool) !void {
     //}
 }
 
-pub fn isPlay(self: *Client) bool {
-    return self.isAlive() and self.state.load(.Acquire) == .play;
+pub fn canSendPlay(self: *const Client) bool {
+    return self.inner.canSend() and self.state.load(.Acquire) == .play;
 }
-pub fn readyForCleanup(self: *Client) bool {
-    return !self.isAlive() and self.inner.buffer.isEmpty();
+pub inline fn readyForCleanup(self: *Client) bool {
+    return !self.isAlive();
 }
 pub inline fn isAlive(self: *const Client) bool {
     return self.inner.isAlive();
 }
 
-pub fn stop(self: *Client) void {
-    if (self.entity) |e| {
-        self.entity = null;
-        self.server.returnEntity(e);
-    }
-    self.inner.stop(&self.server.loop);
+pub inline fn stop(self: *Client) void {
+    //if (self.entity) |e| {
+    //    self.entity = null;
+    //    self.server.returnEntity(e);
+    //}
+    self.inner.queueStop(&self.server.loop);
 }
 
 pub fn deinit(self: *Client) void {

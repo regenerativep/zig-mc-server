@@ -8,7 +8,8 @@ and [libxev](https://github.com/mitchellh/libxev) for non-blocking networking.
 
 ## Building
 
-Running the server should be a simple `zig build run`. No control over server
-configuration yet, so the server will just start on `127.0.0.1:25565`.
+Running the server should be a simple `zig build run`. Server configuration at the
+    moment is very basic. You can modify the `config.txt` to change the ip and the port
+    that the server will run on.
 
 

@@ -122,7 +122,7 @@ pub fn tick(self: *Self, server: *Server) !void {
         cl.lock.lockShared();
         defer cl.lock.unlockShared();
 
-        if (cl.isPlay() and cl.entity != null and cl.entity != self) {
+        if (cl.canSendPlay() and cl.entity != null and cl.entity != self) {
             try cl.sendPacket(mcv.P.CB, packet);
             if (head_packet) |p| try cl.sendPacket(mcv.P.CB, p);
         }
