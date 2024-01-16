@@ -458,5 +458,5 @@ test "ast" {
     var ast = try Ast.parse(testing.allocator, &tokenizer);
     defer ast.deinit(testing.allocator);
 
-    std.debug.print("{any}\n", .{ast});
+    //std.debug.print("{any}\n", .{ast});
 }

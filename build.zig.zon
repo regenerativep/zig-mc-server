@@ -13,8 +13,8 @@
             .hash = "12203de3dbf9c235903c71122448ef031622ba8d64b250205934e2a65018b92b9717",
         },
         .mpsc = .{
-            .url = "https://github.com/regenerativep/zig-mpsc/archive/21ac08d2fc08974e186c6ae06e280f47d59693ac.tar.gz",
-            .hash = "12207b3d0b4e582be128f33087d78679363fc13cf74f7ab88e4f8c7a2273e53a9a3d",
+            .url = "https://github.com/tensorush/zig-mpsc/archive/feaff2893900798dd12df49cda68e1a6aa2e7ea7.tar.gz",
+            .hash = "12203af2b852d11d334b790e976b3ef895499c74b34c690f4dfab8994409f1dd4fae",
         },
     },
     .paths = .{""},

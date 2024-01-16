@@ -247,7 +247,8 @@ pub const ChunksToLoad = std.fifo.LinearFifo(*ChunkColumn, .Dynamic);
 
 pub const NullKeepAlive = std.math.maxInt(i64);
 
-cleanup: Mpsc.Node = undefined,
+id: usize,
+cleanup: Server.Message = undefined,
 
 inner: XevClient(struct {
     pub fn onRead(self_: anytype, data: []const u8) void {
@@ -266,29 +267,13 @@ inner: XevClient(struct {
     pub fn onClose(self_: anytype) void {
         const self = @fieldParentPtr(Client, "inner", self_);
 
-        self.server.clients_lock.lockShared();
-        defer self.server.clients_lock.unlockShared();
-
         std.log.debug("Connection to {} closed", .{self.address});
 
-        var iter = self.server.clients.iterator(0);
-        while (iter.next()) |cl| if (cl.canSendPlay()) {
-            // TODO: error handle?
-            if (cl.entity) |e| {
-                cl.sendPacket(mcv.P.CB, .{ .player_info_remove = &.{e.uuid} }) catch {};
-            }
-
-            if (cl == self) continue;
-        };
-
-        if (self.name.len > 0)
-            std.log.info("\"{s}\" disconnected", .{self.name});
-
-        if (self.entity) |e| {
-            self.entity = null;
-            self.server.returnEntity(e);
-        }
-        self.server.clients_cleanup.push(&self.cleanup);
+        // client's cleanup must succeed in sending a message to server,
+        //     therefore it will use a node within the client rather than
+        //     risk allocating one
+        self.cleanup = .{ .data = .{ .client_closed = .{ .client = self } } };
+        self.server.messages.push(&self.cleanup.node);
     }
 }),
 address: net.Address,
@@ -297,6 +282,10 @@ server: *Server,
 
 /// recv thread only
 packet: PacketSM = .{ .waiting = .{} },
+// TODO: state may need to be a locked value, not an atomic. at the moment, it is not
+//     an issue because once state is play, it doesnt change. but if we ever switch back
+//     to configuration state (or if we make the configuration state more complex),
+//     usage of state must block others waiting to do things based on it
 /// modified by recv thread only
 /// readable outside of recv thread
 state: Value(enum(u8) {
@@ -315,10 +304,6 @@ visible_chunks: VisibleChunks = .{},
 /// accessed only during tick
 chunks_to_load: ChunksToLoad,
 
-/// write: recv thread
-/// read: tick thread
-messages: QueuedSpsc(std.BoundedArray(u8, 256), 3) = .{},
-
 desired_chunks_per_tick: usize = 25,
 initial_chunks: ?usize = null,
 
@@ -328,21 +313,25 @@ keep_alives: Spsc(i64, math.log2_int_ceil(usize, Server.MaxKeepAlives)) = .{},
 // doing `NullKeepAlive` cause im guessing ?i64 is not suitable for atomics
 oldest_keep_alive: std.atomic.Value(i64) = .{ .raw = NullKeepAlive },
 
+lock: std.Thread.RwLock = .{},
 /// lock `lock`
 next_teleport_id: i32 = 1,
-
-lock: std.Thread.RwLock = .{},
 name: []const u8 = "",
 entity: ?*Entity = null,
 info: ?mcv.ClientInformation.UT = null,
 
+preloaded_messages: std.ArrayListUnmanaged(*Server.Message) = .{},
+preloaded_messages_lock: std.Thread.RwLock = .{},
+
 pub fn init(
     self: *Client,
+    id: usize,
     stream: net.Stream,
     address: net.Address,
     server: *Server,
 ) void {
     self.* = .{
+        .id = id,
         .inner = undefined,
         .address = address,
         .server = server,
@@ -350,6 +339,32 @@ pub fn init(
         .chunks_to_load = ChunksToLoad.init(server.allocator),
     };
     self.inner.init(&server.loop, stream);
+}
+
+/// Gets a server message node preferably from our local preload, but will lock and get
+/// more from server when necessary
+pub fn getMessage(self: *Client) !*Server.Message {
+    {
+        self.preloaded_messages_lock.lockShared();
+        defer self.preloaded_messages_lock.unlockShared();
+        if (self.preloaded_messages.popOrNull()) |n| return n;
+    }
+    {
+        self.preloaded_messages_lock.lock();
+        defer self.preloaded_messages_lock.unlock();
+        self.server.message_pool_lock.lock();
+        defer self.server.message_pool_lock.unlock();
+        // TODO: find a better way to preload
+        if (self.preloaded_messages.capacity == 0) {
+            try self.preloaded_messages.ensureTotalCapacity(self.server.allocator, 16);
+        }
+        for (self.preloaded_messages.addManyAsSliceAssumeCapacity(
+            self.preloaded_messages.capacity,
+        )) |*n| {
+            n.* = try self.server.message_pool.create();
+        }
+        return self.preloaded_messages.pop();
+    }
 }
 
 pub fn updateState(self: *Client, data: []const u8) !void {
@@ -829,11 +844,14 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             }
                         },
                         .chat_message => |d| {
-                            try self.messages.enqueue(
-                                self.server.allocator,
-                                std.BoundedArray(u8, 256).fromSlice(d.message) catch
-                                    unreachable,
-                            );
+                            const msg = try self.getMessage();
+                            // TODO: don't allocate every message
+                            msg.* = .{ .data = .{ .chat_message = .{
+                                .sender = self,
+                                .message = try self.server.allocator
+                                    .dupe(u8, d.message),
+                            } } };
+                            self.server.messages.push(&msg.node);
                         },
                         else => {
                             std.log.debug(
@@ -872,6 +890,8 @@ pub fn tick(self: *Client) !void {
 
     try self.sendChunks(true);
 
+    // chunks_to_load only modified here and in server's tick call (not on another
+    //     thread)
     if (self.chunks_to_load.count > 0) {
         const total_chunks_to_load = blk: {
             self.lock.lockShared();
@@ -1001,37 +1021,6 @@ pub fn tick(self: *Client) !void {
             .chunk_batch_finished = @intCast(total_chunks_to_load),
         });
     }
-
-    self.lock.lockShared();
-    defer self.lock.unlockShared();
-    const uuid = blk: {
-        if (self.entity) |entity| {
-            entity.lock.lockShared();
-            defer entity.lock.unlockShared();
-            break :blk entity.uuid;
-        }
-        break :blk mem.zeroes(mcv.Uuid.UT);
-    };
-    while (self.messages.dequeue()) |msg| {
-        self.server.clients_lock.lockShared();
-        defer self.server.clients_lock.unlockShared();
-        var iter = self.server.clients.iterator(0);
-        while (iter.next()) |cl| if (cl.canSendPlay()) {
-            try cl.sendPacket(mcv.P.CB, .{
-                .player_chat_message = .{
-                    .sender = uuid,
-                    .index = 0, // TODO: what is this
-                    .message = msg.constSlice(),
-                    .timestamp = @intCast(std.time.milliTimestamp()),
-                    .salt = 0,
-                    .previous_messages = &.{},
-                    .filter = .pass_through,
-                    .chat_type = 0,
-                    .sender_name = .{ .string = self.name },
-                },
-            });
-        };
-    }
 }
 
 // TODO: we probably dont need this?
@@ -1140,13 +1129,13 @@ pub fn sendChunks(self: *Client, send_center: bool) !void {
         );
     };
     {
-        self.server.requested_chunks_lock.lock();
-        defer self.server.requested_chunks_lock.unlock();
         for (res.new) |pos| {
-            try self.server.requested_chunks.writeItem(.{
+            const msg = try self.getMessage();
+            msg.* = .{ .data = .{ .request_chunk = .{
+                .sender = self,
                 .position = pos,
-                .client = self,
-            });
+            } } };
+            self.server.messages.push(&msg.node);
         }
     }
     //for (res.remove) |pos| {
@@ -1174,19 +1163,24 @@ pub inline fn isAlive(self: *const Client) bool {
 }
 
 pub inline fn stop(self: *Client) void {
-    //if (self.entity) |e| {
-    //    self.entity = null;
-    //    self.server.returnEntity(e);
-    //}
     self.inner.queueStop(&self.server.loop);
 }
 
 pub fn deinit(self: *Client) void {
-    self.messages.deinit();
+    // server handles freeing the entity before this fn is called
+    {
+        self.server.message_pool_lock.lock();
+        defer self.server.message_pool_lock.unlock();
+        var i = self.preloaded_messages.items.len;
+        while (i > 0) {
+            i -= 1;
+            self.server.message_pool.destroy(self.preloaded_messages.items[i]);
+        }
+    }
+    self.preloaded_messages.deinit(self.server.allocator);
     self.visible_chunks.deinit(self.server.allocator);
     self.chunks_to_load.deinit();
     if (self.info) |inf| self.server.allocator.free(inf.locale);
-    if (self.entity) |e| self.server.returnEntity(e);
     if (self.name.len > 0) self.server.allocator.free(self.name);
     self.packet.deinit(self.server.allocator);
     self.arena.deinit();

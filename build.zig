@@ -17,22 +17,23 @@ pub fn build(b: *std.Build) void {
         .target = target,
     }).module("mpsc");
 
-    const lib = b.addStaticLibrary(.{
-        .name = "zig-mc-server",
-        .root_source_file = .{ .path = "src/lib.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-    lib.root_module.addImport("mcp", mcp_mod);
-    lib.root_module.addImport("xev", xev_mod);
-    lib.root_module.addImport("mpsc", mpsc_mod);
-    b.installArtifact(lib);
+    //const lib = b.addStaticLibrary(.{
+    //    .name = "zig-mc-server",
+    //    .root_source_file = .{ .path = "src/lib.zig" },
+    //    .target = target,
+    //    .optimize = optimize,
+    //});
+    //lib.root_module.addImport("mcp", mcp_mod);
+    //lib.root_module.addImport("xev", xev_mod);
+    //lib.root_module.addImport("mpsc", mpsc_mod);
+    //b.installArtifact(lib);
 
     const exe = b.addExecutable(.{
         .name = "zig-mc-server",
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
         .optimize = optimize,
+        .single_threaded = true,
     });
     exe.root_module.addImport("mcp", mcp_mod);
     exe.root_module.addImport("xev", xev_mod);
