@@ -71,6 +71,11 @@ pub const DoubleBuffer = struct {
 ///     it is safe to clean up.
 pub fn XevClient(comptime Callbacks: type) type {
     return struct {
+        // libxev for iocp uses windows.HANDLE (which is just fd_t, however this is
+        //     not what os.socket_t is so we cant actually use that. plus, using this
+        //     for stdin/stdout is nice.
+        pub const Handle = std.os.fd_t;
+
         alive: std.atomic.Value(bool) = .{ .raw = true },
 
         writing_active: std.atomic.Value(bool) = .{ .raw = false },
@@ -90,18 +95,19 @@ pub fn XevClient(comptime Callbacks: type) type {
 
         close_comp: xev.Completion = undefined,
 
-        stream: net.Stream,
+        handle: Handle,
 
         const Self = @This();
 
         /// Initializes an uninitialized `XevClient`. Uses `loop` to add the
         /// recv listener to the libxev loop.
-        pub fn init(self: *Self, loop: *xev.Loop, stream: net.Stream) void {
+        pub fn init(self: *Self, loop: *xev.Loop, handle: Handle) void {
             self.* = .{
-                .stream = stream,
+                .handle = handle,
                 .recv_comp = .{
-                    .op = .{ .recv = .{
-                        .fd = stream.handle,
+                    //.op = .{ .recv = .{
+                    .op = .{ .read = .{
+                        .fd = handle,
                         .buffer = .{ .slice = &self.recv_buffer },
                     } },
                     .userdata = self,
@@ -157,7 +163,7 @@ pub fn XevClient(comptime Callbacks: type) type {
                 active_buffer.lock.lockShared();
                 self.send_comp = .{
                     .op = .{ .send = .{
-                        .fd = self.stream.handle,
+                        .fd = self.handle,
                         .buffer = .{
                             .slice = active_buffer.data.items[self.buffer.total_read..],
                         },
@@ -220,7 +226,7 @@ pub fn XevClient(comptime Callbacks: type) type {
                 active_buffer.lock.lockShared();
                 if (active_buffer.data.items.len > self.buffer.total_read) {
                     c.op.send = .{
-                        .fd = self.stream.handle,
+                        .fd = self.handle,
                         .buffer = .{
                             .slice = active_buffer.data.items[self.buffer.total_read..],
                         },
@@ -249,7 +255,7 @@ pub fn XevClient(comptime Callbacks: type) type {
                 active_buffer.lock.lockShared();
                 if (active_buffer.data.items.len > 0) {
                     c.op.send = .{
-                        .fd = self.stream.handle,
+                        .fd = self.handle,
                         .buffer = .{
                             .slice = active_buffer.data.items[self.buffer.total_read..],
                         },
@@ -275,7 +281,8 @@ pub fn XevClient(comptime Callbacks: type) type {
             r: xev.Result,
         ) xev.CallbackAction {
             var self: *Self = @ptrCast(@alignCast(self_.?));
-            if (r.recv) |read_len| {
+            //if (r.recv) |read_len| {
+            if (r.read) |read_len| {
                 Callbacks.onRead(self, self.recv_buffer[0..read_len]);
                 return .rearm;
             } else |e| {
@@ -330,7 +337,7 @@ pub fn XevClient(comptime Callbacks: type) type {
 
         pub fn close(self: *Self, loop: *xev.Loop) void {
             self.close_comp = .{
-                .op = .{ .close = .{ .fd = self.stream.handle } },
+                .op = .{ .close = .{ .fd = self.handle } },
                 .callback = closeCb,
                 .userdata = self,
             };

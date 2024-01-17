@@ -15,6 +15,8 @@ const mcp = @import("mcp");
 const mcio = mcp.packetio;
 const mcv = mcp.vlatest;
 
+const XevClient = @import("xevclient.zig").XevClient;
+
 pub const config = @import("config.zig");
 
 pub const Client = @import("client.zig");
@@ -130,6 +132,55 @@ pub const Server = struct {
     message_pool_lock: std.Thread.Mutex = .{},
 
     tick_arena: std.heap.ArenaAllocator = undefined,
+
+    stdin: XevClient(struct {
+        pub fn onRead(self_: anytype, data: []const u8) void {
+            const self = @fieldParentPtr(Server, "stdin", self_);
+            if (data.len == 0) {
+                if (self.stdin.recv_error) |e| {
+                    std.log.err("Stdin read error error\"{}\"", .{e});
+                } else {}
+            } else {
+                for (data) |b| {
+                    if (b == '\n') {
+                        self.message_pool_lock.lock();
+                        const msg = self.message_pool.create() catch |e| {
+                            self.message_pool_lock.unlock();
+                            std.log.err("{}", .{e});
+                            return;
+                        };
+                        self.message_pool_lock.unlock();
+                        errdefer {
+                            self.message_pool_lock.lock();
+                            self.message_pool.destroy(msg);
+                            self.message_pool_lock.unlock();
+                        }
+
+                        msg.* = .{ .data = .{ .run_command = .{
+                            .sender = null,
+                            .command = self.stdin_buffer
+                                .toOwnedSlice(self.allocator) catch |e| {
+                                std.log.err("{}", .{e});
+                                return;
+                            },
+                        } } };
+                        self.messages.push(&msg.node);
+                    } else {
+                        self.stdin_buffer.append(self.allocator, b) catch |e| {
+                            std.log.err("{}", .{e});
+                            return;
+                        };
+                    }
+                }
+            }
+        }
+
+        pub fn onClose(self_: anytype) void {
+            const self = @fieldParentPtr(Server, "stdin", self_);
+            _ = self;
+        }
+    }) = undefined,
+    stdin_buffer: std.ArrayListUnmanaged(u8) = .{},
 
     fn keepAliveCb(
         self_: ?*anyopaque,
@@ -315,76 +366,81 @@ pub const Server = struct {
                     self.returnEntity(e);
                 }
             },
-            .return_entity => |d| {
-                self.returnEntity(d.entity);
-            },
-            .run_command => |d| blk: {
-                const cmd = Command.parse(ar, d.command) catch |e| {
-                    if (d.sender) |cl| {
-                        if (cl.canSendPlay()) {
-                            try cl.sendPacket(mcv.P.CB, .{ .system_chat_message = .{
-                                .content = .{ .string = try std.fmt.allocPrint(
-                                    ar,
-                                    "Failed to parse command: {}",
-                                    .{e},
-                                ) },
-                                .is_action_bar = false,
-                            } });
-                        }
-                    } else {
-                        std.log.err("Failed to parse command: {}", .{e});
-                    }
-                    break :blk;
-                } orelse {
-                    if (d.sender) |cl| {
-                        if (cl.canSendPlay()) {
-                            try cl.sendPacket(mcv.P.CB, .{ .system_chat_message = .{
-                                .content = .{ .string = "Unknown command" },
-                                .is_action_bar = false,
-                            } });
-                        }
-                    } else {
-                        std.log.err("Unknown command", .{});
-                    }
-                    break :blk;
-                };
-                switch (cmd) {
-                    .list => {
-                        var response = std.ArrayList(u8).init(ar);
-                        try response.appendSlice("Players: ");
-                        {
-                            self.clients_lock.lockShared();
-                            defer self.clients_lock.unlockShared();
-                            var iter = self.clients.iterator(0);
-                            var first = true;
-                            while (iter.next()) |cl| if (cl.canSendPlay()) {
-                                cl.lock.lockShared();
-                                defer cl.lock.unlockShared();
-                                if (cl.name.len > 0)
-                                    try response.appendSlice(cl.name);
-                                if (first) {
-                                    first = false;
-                                } else {
-                                    try response.appendSlice(", ");
-                                }
-                            };
-                        }
-                        if (d.sender) |cl| {
-                            if (cl.canSendPlay()) {
-                                try cl.sendPacket(mcv.P.CB, .{
-                                    .system_chat_message = .{
-                                        .content = .{ .string = response.items },
-                                        .is_action_bar = false,
-                                    },
-                                });
-                            }
+            .return_entity => |d| self.returnEntity(d.entity),
+            .run_command => |d| try self.tryRunCommand(ar, d.sender, d.command),
+        }
+    }
+
+    pub fn tryRunCommand(
+        self: *Server,
+        ar: Allocator,
+        sender: ?*Client,
+        command: []const u8,
+    ) !void {
+        const cmd = Command.parse(ar, command) catch |e| {
+            if (sender) |cl| {
+                if (cl.canSendPlay()) {
+                    try cl.sendPacket(mcv.P.CB, .{ .system_chat_message = .{
+                        .content = .{ .string = try std.fmt.allocPrint(
+                            ar,
+                            "Failed to parse command: {}",
+                            .{e},
+                        ) },
+                        .is_action_bar = false,
+                    } });
+                }
+            } else {
+                std.log.err("Failed to parse command: {}", .{e});
+            }
+            return;
+        } orelse {
+            if (sender) |cl| {
+                if (cl.canSendPlay()) {
+                    try cl.sendPacket(mcv.P.CB, .{ .system_chat_message = .{
+                        .content = .{ .string = "Unknown command" },
+                        .is_action_bar = false,
+                    } });
+                }
+            } else {
+                std.log.err("Unknown command", .{});
+            }
+            return;
+        };
+        switch (cmd) {
+            .list => {
+                var response = std.ArrayList(u8).init(ar);
+                try response.appendSlice("Players: ");
+                {
+                    self.clients_lock.lockShared();
+                    defer self.clients_lock.unlockShared();
+                    var iter = self.clients.iterator(0);
+                    var first = true;
+                    while (iter.next()) |cl| if (cl.canSendPlay()) {
+                        cl.lock.lockShared();
+                        defer cl.lock.unlockShared();
+                        if (cl.name.len > 0)
+                            try response.appendSlice(cl.name);
+                        if (first) {
+                            first = false;
                         } else {
-                            std.log.info("{s}", .{response.items});
+                            try response.appendSlice(", ");
                         }
-                    },
-                    else => {},
+                    };
+                }
+                if (sender) |cl| {
+                    if (cl.canSendPlay()) {
+                        try cl.sendPacket(mcv.P.CB, .{
+                            .system_chat_message = .{
+                                .content = .{ .string = response.items },
+                                .is_action_bar = false,
+                            },
+                        });
+                    }
+                } else {
+                    std.log.info("{s}", .{response.items});
                 }
             },
+            else => {},
         }
     }
 
@@ -550,6 +606,7 @@ pub const Server = struct {
             .userdata = self,
             .callback = acceptCb,
         };
+        self.stdin.init(&self.loop, std.io.getStdIn().handle);
         self.loop.add(&self.accept_comp);
         self.loop.timer(&self.tick_timer_comp, 1000 / self.target_tps.raw, self, tickCb);
         self.loop.timer(&self.keepalive_timer_comp, KeepAliveTime, self, keepAliveCb);
@@ -562,6 +619,7 @@ pub const Server = struct {
             msg.deinit(self.allocator);
         }
         self.message_pool.deinit();
+        self.stdin_buffer.deinit(self.allocator);
         {
             var iter = self.chunks.valueIterator();
             while (iter.next()) |chunk| {

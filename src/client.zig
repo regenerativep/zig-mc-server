@@ -341,7 +341,7 @@ pub fn init(
         .arena = std.heap.ArenaAllocator.init(server.allocator),
         .chunks_to_load = ChunksToLoad.init(server.allocator),
     };
-    self.inner.init(&server.loop, stream);
+    self.inner.init(&server.loop, stream.handle);
 }
 
 /// Gets a server message node preferably from our local preload, but will lock and get
