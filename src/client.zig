@@ -272,7 +272,10 @@ inner: XevClient(struct {
         // client's cleanup must succeed in sending a message to server,
         //     therefore it will use a node within the client rather than
         //     risk allocating one
-        self.cleanup = .{ .data = .{ .client_closed = .{ .client = self } } };
+        self.cleanup = .{
+            .data = .{ .client_closed = .{ .client = self } },
+            .allocated = false,
+        };
         self.server.messages.push(&self.cleanup.node);
     }
 }),
@@ -850,6 +853,20 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                 .sender = self,
                                 .message = try self.server.allocator
                                     .dupe(u8, d.message),
+                            } } };
+                            self.server.messages.push(&msg.node);
+                        },
+                        .chat_command => |d| {
+                            const msg = try self.getMessage();
+                            errdefer {
+                                self.preloaded_messages_lock.lockShared();
+                                self.preloaded_messages.appendAssumeCapacity(msg);
+                                self.preloaded_messages_lock.lockShared();
+                            }
+                            msg.* = .{ .data = .{ .run_command = .{
+                                .sender = self,
+                                .command = try self.server.allocator
+                                    .dupe(u8, d.command),
                             } } };
                             self.server.messages.push(&msg.node);
                         },

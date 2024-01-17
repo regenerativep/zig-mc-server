@@ -20,10 +20,13 @@ pub const config = @import("config.zig");
 pub const Client = @import("client.zig");
 pub const Entity = @import("entity.zig");
 
+pub const Command = @import("commands.zig").Command;
+
 test {
     _ = Client;
     _ = Entity;
     _ = config;
+    _ = Command;
 }
 
 pub const Position = mcv.V3(f64);
@@ -46,6 +49,9 @@ pub const Server = struct {
 
     pub const Message = struct {
         node: Mpsc.Node = undefined,
+        /// whether this `Message` must be destroyed (not whether deinit should be
+        /// called)
+        allocated: bool = true,
         data: union(enum) {
             chat_message: struct {
                 sender: *Client,
@@ -61,12 +67,19 @@ pub const Server = struct {
             return_entity: struct {
                 entity: *Entity,
             },
+            run_command: struct {
+                sender: ?*Client,
+                command: []const u8,
+            },
         },
 
         pub fn deinit(self: *Message, a: Allocator) void {
             switch (self.data) {
                 .chat_message => |d| {
                     a.free(d.message);
+                },
+                .run_command => |d| {
+                    a.free(d.command);
                 },
                 else => {},
             }
@@ -115,6 +128,8 @@ pub const Server = struct {
     messages: Mpsc = undefined,
     message_pool: MessagePool = undefined,
     message_pool_lock: std.Thread.Mutex = .{},
+
+    tick_arena: std.heap.ArenaAllocator = undefined,
 
     fn keepAliveCb(
         self_: ?*anyopaque,
@@ -205,6 +220,198 @@ pub const Server = struct {
         return .disarm;
     }
 
+    pub fn handleMessage(self: *Server, msg: *Message) !void {
+        const ar = self.tick_arena.allocator();
+        defer _ = self.tick_arena.reset(.retain_capacity);
+
+        defer {
+            if (msg.allocated) {
+                msg.deinit(self.allocator);
+                self.message_pool_lock.lock();
+                self.message_pool.destroy(msg);
+                self.message_pool_lock.unlock();
+            } else {
+                msg.deinit(self.allocator);
+            }
+        }
+        switch (msg.data) {
+            .chat_message => |d| {
+                std.log.info("{s}: {s}", .{ d.sender.name, d.message });
+                d.sender.lock.lockShared();
+                defer d.sender.lock.unlockShared();
+                const packet = mcv.P.CB.UT{
+                    .player_chat_message = .{
+                        .sender = blk: {
+                            if (d.sender.entity) |entity| {
+                                entity.lock.lockShared();
+                                defer entity.lock.unlockShared();
+                                break :blk entity.uuid;
+                            }
+                            break :blk mem.zeroes(mcv.Uuid.UT);
+                        },
+                        .index = 0, // TODO: what is this
+                        .message = d.message,
+                        .timestamp = @intCast(std.time.milliTimestamp()),
+                        .salt = 0,
+                        .previous_messages = &.{},
+                        .filter = .pass_through,
+                        .chat_type = 0,
+                        .sender_name = .{ .string = d.sender.name },
+                    },
+                };
+                self.clients_lock.lockShared();
+                defer self.clients_lock.unlockShared();
+                var iter = self.clients.iterator(0);
+                while (iter.next()) |cl| if (cl.canSendPlay()) {
+                    try cl.sendPacket(mcv.P.CB, packet);
+                };
+            },
+            .request_chunk => |d| {
+                const chunk = try self.getChunk(d.position);
+                chunk.lock.lock();
+                defer chunk.lock.unlock();
+                chunk.viewers += 1;
+                errdefer chunk.viewers -= 1;
+
+                try d.sender.chunks_to_load.writeItem(chunk);
+            },
+            .client_closed => |d| {
+                // no other thread should be looking at client right now (so we
+                //     shouldnt need to lock anything in client EXCEPT if the
+                //     client is being looked at through iterating through all
+                //     clients, therefore we must lock client list until we have
+                //     completely removed the client (which we will have to lock
+                //     anyway)
+                const closed_cl = d.client;
+
+                self.clients_lock.lock();
+                const entity_to_return = closed_cl.entity;
+                closed_cl.entity = null;
+                {
+                    defer self.clients_lock.unlock();
+                    if (entity_to_return) |e| {
+                        const packet = mcv.P.CB.UT{
+                            .player_info_remove = &.{e.uuid},
+                        };
+                        var iter = self.clients.iterator(0);
+                        while (iter.next()) |cl| {
+                            if (cl != closed_cl and cl.canSendPlay()) {
+                                try cl.sendPacket(mcv.P.CB, packet);
+                            }
+                        }
+                    }
+                    if (closed_cl.name.len > 0)
+                        std.log.info("\"{s}\" disconnected", .{closed_cl.name});
+
+                    self.clients_available.set(closed_cl.id);
+                    closed_cl.deinit();
+                    // mark as not alive so that anyone looping on this will skip
+                    //     and not have to check the bit set to see if the client
+                    //     is deinitialized
+                    closed_cl.inner.alive = .{ .raw = false };
+                }
+
+                if (entity_to_return) |e| {
+                    self.returnEntity(e);
+                }
+            },
+            .return_entity => |d| {
+                self.returnEntity(d.entity);
+            },
+            .run_command => |d| blk: {
+                const cmd = Command.parse(ar, d.command) catch |e| {
+                    if (d.sender) |cl| {
+                        if (cl.canSendPlay()) {
+                            try cl.sendPacket(mcv.P.CB, .{ .system_chat_message = .{
+                                .content = .{ .string = try std.fmt.allocPrint(
+                                    ar,
+                                    "Failed to parse command: {}",
+                                    .{e},
+                                ) },
+                                .is_action_bar = false,
+                            } });
+                        }
+                    } else {
+                        std.log.err("Failed to parse command: {}", .{e});
+                    }
+                    break :blk;
+                } orelse {
+                    if (d.sender) |cl| {
+                        if (cl.canSendPlay()) {
+                            try cl.sendPacket(mcv.P.CB, .{ .system_chat_message = .{
+                                .content = .{ .string = "Unknown command" },
+                                .is_action_bar = false,
+                            } });
+                        }
+                    } else {
+                        std.log.err("Unknown command", .{});
+                    }
+                    break :blk;
+                };
+                switch (cmd) {
+                    .list => {
+                        var response = std.ArrayList(u8).init(ar);
+                        try response.appendSlice("Players: ");
+                        {
+                            self.clients_lock.lockShared();
+                            defer self.clients_lock.unlockShared();
+                            var iter = self.clients.iterator(0);
+                            var first = true;
+                            while (iter.next()) |cl| if (cl.canSendPlay()) {
+                                cl.lock.lockShared();
+                                defer cl.lock.unlockShared();
+                                if (cl.name.len > 0)
+                                    try response.appendSlice(cl.name);
+                                if (first) {
+                                    first = false;
+                                } else {
+                                    try response.appendSlice(", ");
+                                }
+                            };
+                        }
+                        if (d.sender) |cl| {
+                            if (cl.canSendPlay()) {
+                                try cl.sendPacket(mcv.P.CB, .{
+                                    .system_chat_message = .{
+                                        .content = .{ .string = response.items },
+                                        .is_action_bar = false,
+                                    },
+                                });
+                            }
+                        } else {
+                            std.log.info("{s}", .{response.items});
+                        }
+                    },
+                    else => {},
+                }
+            },
+        }
+    }
+
+    pub fn returnEntity(self: *Server, entity: *Entity) void {
+        const id = entity.id;
+        {
+            self.entities_lock.lock();
+            defer self.entities_lock.unlock();
+            _ = self.eid_map.remove(id);
+
+            self.unused_entities_lock.lock();
+            defer self.unused_entities_lock.unlock();
+            self.unused_entities.prepend(&entity.cleanup);
+        }
+
+        self.clients_lock.lockShared();
+        defer self.clients_lock.unlockShared();
+        var iter = self.clients.iterator(0);
+        while (iter.next()) |cl| if (cl.canSendPlay()) {
+            cl.sendPacket(mcv.P.CB, .{
+                .remove_entities = &.{@intCast(id)},
+            }) catch {}; // TODO: handle error?
+        };
+
+        // TODO: deinit entity (but not the id!)
+    }
+
     pub fn runTick(self: *Server) !void {
         // TODO: we need better error handling of stuff like looping through all clients
         //     and sending a message; a single client erroring should not prevent
@@ -214,116 +421,12 @@ pub const Server = struct {
         {
             while (self.messages.pop()) |node| {
                 const msg = @fieldParentPtr(Message, "node", node);
-                var reused_msg = false;
-                defer {
-                    if (!reused_msg) {
-                        const is_pooled = msg.data != .client_closed;
-                        msg.deinit(self.allocator);
-                        if (is_pooled) {
-                            self.message_pool_lock.lock();
-                            self.message_pool.destroy(msg);
-                            self.message_pool_lock.unlock();
-                        }
-                    }
-                }
-                switch (msg.data) {
-                    .chat_message => |d| {
-                        std.log.info("{s}: {s}", .{ d.sender.name, d.message });
-                        d.sender.lock.lockShared();
-                        defer d.sender.lock.unlockShared();
-                        const packet = mcv.P.CB.UT{
-                            .player_chat_message = .{
-                                .sender = blk: {
-                                    if (d.sender.entity) |entity| {
-                                        entity.lock.lockShared();
-                                        defer entity.lock.unlockShared();
-                                        break :blk entity.uuid;
-                                    }
-                                    break :blk mem.zeroes(mcv.Uuid.UT);
-                                },
-                                .index = 0, // TODO: what is this
-                                .message = d.message,
-                                .timestamp = @intCast(std.time.milliTimestamp()),
-                                .salt = 0,
-                                .previous_messages = &.{},
-                                .filter = .pass_through,
-                                .chat_type = 0,
-                                .sender_name = .{ .string = d.sender.name },
-                            },
-                        };
-                        self.clients_lock.lockShared();
-                        defer self.clients_lock.unlockShared();
-                        var iter = self.clients.iterator(0);
-                        while (iter.next()) |cl| if (cl.canSendPlay()) {
-                            try cl.sendPacket(mcv.P.CB, packet);
-                        };
-                    },
-                    .request_chunk => |d| {
-                        const chunk = try self.getChunk(d.position);
-                        chunk.lock.lock();
-                        defer chunk.lock.unlock();
-                        chunk.viewers += 1;
-                        errdefer chunk.viewers -= 1;
-
-                        try d.sender.chunks_to_load.writeItem(chunk);
-                    },
-                    .client_closed => |d| {
-                        // no other thread should be looking at client right now (so we
-                        //     shouldnt need to lock anything in client EXCEPT if the
-                        //     client is being looked at through iterating through all
-                        //     clients, therefore we must lock client list until we have
-                        //     completely removed the client (which we will have to lock
-                        //     anyway)
-                        self.clients_lock.lock();
-                        defer self.clients_lock.unlock();
-                        if (d.client.entity) |e| {
-                            const packet = mcv.P.CB.UT{
-                                .player_info_remove = &.{e.uuid},
-                            };
-                            var iter = self.clients.iterator(0);
-                            while (iter.next()) |cl| {
-                                if (cl != d.client and cl.canSendPlay()) {
-                                    try cl.sendPacket(mcv.P.CB, packet);
-                                }
-                            }
-                            reused_msg = true;
-                            msg.* = .{ .data = .{ .return_entity = .{ .entity = e } } };
-                            self.messages.push(&msg.node);
-                        }
-                        if (d.client.name.len > 0)
-                            std.log.info("\"{s}\" disconnected", .{d.client.name});
-
-                        self.clients_available.set(d.client.id);
-                        d.client.deinit();
-                        // mark as not alive so that anyone looping on this will skip
-                        //     and not have to check the bit set to see if the client
-                        //     is deinitialized
-                        d.client.inner.alive = .{ .raw = false };
-                    },
-                    .return_entity => |d| {
-                        const id = d.entity.id;
-                        {
-                            self.entities_lock.lock();
-                            defer self.entities_lock.unlock();
-                            _ = self.eid_map.remove(id);
-
-                            self.unused_entities_lock.lock();
-                            defer self.unused_entities_lock.unlock();
-                            self.unused_entities.prepend(&d.entity.cleanup);
-                        }
-
-                        self.clients_lock.lockShared();
-                        defer self.clients_lock.unlockShared();
-                        var iter = self.clients.iterator(0);
-                        while (iter.next()) |cl| if (cl.canSendPlay()) {
-                            cl.sendPacket(mcv.P.CB, .{
-                                .remove_entities = &.{@intCast(id)},
-                            }) catch {}; // TODO: handle error?
-                        };
-
-                        // TODO: deinit entity (but not the id!)
-                    },
-                }
+                self.handleMessage(msg) catch |e| {
+                    std.log.err(
+                        "Failed to handle internal message {any}: {}",
+                        .{ msg.*, e },
+                    );
+                };
             }
         }
 
@@ -433,6 +536,7 @@ pub const Server = struct {
     pub fn init(self: *Server, address: net.Address) !void {
         self.messages.init();
         self.message_pool = MessagePool.init(self.allocator);
+        self.tick_arena = std.heap.ArenaAllocator.init(self.allocator);
         self.chunk_pool = std.heap.MemoryPool(ChunkColumn).init(self.allocator);
         try self.inner.listen(address);
         errdefer self.inner.deinit();
@@ -458,7 +562,6 @@ pub const Server = struct {
             msg.deinit(self.allocator);
         }
         self.message_pool.deinit();
-        self.clients_available.deinit(self.allocator);
         {
             var iter = self.chunks.valueIterator();
             while (iter.next()) |chunk| {
@@ -473,6 +576,8 @@ pub const Server = struct {
             client.deinit();
         }
         self.clients.deinit(self.allocator);
+        self.clients_available.deinit(self.allocator);
+        // TODO: deinit entities
         self.inner.deinit();
         self.loop.deinit();
         self.* = undefined;
