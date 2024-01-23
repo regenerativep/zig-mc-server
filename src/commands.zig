@@ -15,6 +15,7 @@ pub const Command = union(enum) {
         y: f64,
         z: f64,
     },
+    stop: void,
 
     pub fn parse(a: Allocator, text: []const u8) !?Command {
         return try readCommand(a, Command, text);

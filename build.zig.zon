@@ -4,17 +4,17 @@
     .minimum_zig_version = "0.12.0",
     .dependencies = .{
         .mcp = .{
-            .url = "https://github.com/regenerativep/zigmcp/archive/6c8c40dfacbebc76ccdffc39c0527db1e2d69410.tar.gz",
-            .hash = "12202d6a3897ac573968c0ba8f7d3da58ef846645275062ab89707f7a0f9edd0408e",
+            .url = "git+https://github.com/regenerativep/zigmcp.git#4c58e31382a9bd9df3c46d47dd3efb1c3ad421ab",
+            .hash = "122095599358d9716cfa8568755be4739467fa22b7170f24f1c5c32804b5ca95a890",
             //.path = "../zigmcp",
         },
         .libxev = .{
-            .url = "https://github.com/mitchellh/libxev/archive/2494978bedec01a856e8f3c47a33148ad1755fab.tar.gz",
-            .hash = "12203de3dbf9c235903c71122448ef031622ba8d64b250205934e2a65018b92b9717",
+            .url = "git+https://github.com/mitchellh/libxev.git#4e6781895e4e6c477597c8c2713d36cd82b57d07",
+            .hash = "12203f87e00caa6c07c02a748f234a5c0ee2ca5c334ec464e88810d93e7b5495a56f",
         },
         .mpsc = .{
-            .url = "https://github.com/tensorush/zig-mpsc/archive/feaff2893900798dd12df49cda68e1a6aa2e7ea7.tar.gz",
-            .hash = "12203af2b852d11d334b790e976b3ef895499c74b34c690f4dfab8994409f1dd4fae",
+            .url = "git+https://github.com/tensorush/zig-mpsc.git#378d3b52b46db39fc3dd6ed27be68e48c81b2175",
+            .hash = "1220c0fbd885cb213f87bc5edf293b66fde8a18f1a916c195febbaba474f9378ee1a",
         },
     },
     .paths = .{""},

@@ -933,12 +933,12 @@ pub fn tick(self: *Client) !void {
                     .chunk_x = @intCast(chunk.position.x),
                     .chunk_z = @intCast(chunk.position.z),
                     .heightmaps = .{
-                        .motion_blocking = chunk.inner.motion_blocking,
-                        .world_surface = chunk.inner.world_surface,
+                        .motion_blocking = chunk.inner.hard.motion_blocking,
+                        .world_surface = chunk.inner.hard.world_surface,
                     },
-                    .data = &chunk.inner.sections,
+                    .data = &chunk.inner.hard.sections,
                     .block_entities = &.{},
-                    .light_levels = chunk.inner.light_levels,
+                    .light_levels = chunk.inner.hard.light_levels,
                 },
             });
         }
