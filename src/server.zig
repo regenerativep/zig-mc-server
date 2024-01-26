@@ -80,6 +80,9 @@ inner: net.StreamServer = net.StreamServer.init(.{
 loop: xev.Loop = undefined,
 allocator: Allocator,
 
+world_min_y: mcp.chunk.BlockY = -64,
+world_height: mcp.chunk.UBlockY = 384,
+
 tick_timer_comp: xev.Completion = .{},
 target_tps: Value(usize) = .{ .raw = 20 },
 current_tick: Value(usize) = .{ .raw = 0 },
@@ -510,12 +513,17 @@ pub fn getChunk(self: *Server, pos: ChunkPosition) !*ChunkColumn {
     chunk.* = .{
         .inner = .{ .hard = blk: {
             const p = try self.allocator.create(mcp.chunk.Column);
-            p.* = mcp.chunk.Column.initFlat();
+            errdefer self.allocator.destroy(p);
+            p.* = try mcp.chunk.Column
+                .initFlat(self.allocator, @divExact(self.world_height, 16));
             break :blk p;
         } },
         .position = pos,
     };
-    errdefer self.allocator.destroy(chunk.inner.hard);
+    errdefer {
+        chunk.inner.hard.deinit(self.allocator);
+        self.allocator.destroy(chunk.inner.hard);
+    }
     try self.chunks.putNoClobber(self.allocator, pos, chunk);
     return chunk;
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const mcp = @import("mcp");
 const mcs = @import("lib.zig");
 
 pub fn main() !void {
@@ -35,10 +36,33 @@ pub fn main() !void {
         }
     }
 
+    var height: mcp.chunk.UBlockY = 384;
+    if (config_ast.object.get("height")) |height_node| blk: {
+        if (height_node == .integer) {
+            if (std.math.cast(mcp.chunk.UBlockY, height_node.integer)) |read_height| {
+                height = read_height;
+                break :blk;
+            }
+        }
+        return error.InvalidHeight;
+    }
+    var min_y: mcp.chunk.BlockY = -64;
+    if (config_ast.object.get("min_y")) |min_y_node| blk: {
+        if (min_y_node == .integer) {
+            if (std.math.cast(mcp.chunk.BlockY, min_y_node.integer)) |read_min_y| {
+                min_y = read_min_y;
+                break :blk;
+            }
+        }
+        return error.InvalidHeight;
+    }
+
     const address = try std.net.Address.resolveIp(ip_str, port);
 
     var server = mcs.Server{
         .allocator = gpa.allocator(),
+        .world_min_y = min_y,
+        .world_height = height,
     };
 
     std.log.info("Initializing server on {}", .{address});

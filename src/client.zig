@@ -26,7 +26,7 @@ const Entity = @import("entity.zig");
 
 const XevClient = @import("xevclient.zig").XevClient;
 
-const DefaultRegistry = @import("registry.zig").DefaultRegistry;
+const registry = @import("registry.zig");
 
 const Spsc = @import("spsc.zig").Spsc;
 const QueuedSpsc = @import("spsc.zig").QueuedSpsc;
@@ -384,7 +384,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
             switch (self.state.load(.Acquire)) {
                 .handshake => {
                     var packet: mcv.H.SB.UT = undefined;
-                    try mcv.H.SB.read(reader, &packet, ar);
+                    try mcv.H.SB.read(reader, &packet, .{ .allocator = ar });
                     if (packet != .handshake) return;
                     switch (packet.handshake.next_state) {
                         .status => {
@@ -397,7 +397,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                 },
                 .status => {
                     var packet: mcv.S.SB.UT = undefined;
-                    try mcv.S.SB.read(reader, &packet, ar);
+                    try mcv.S.SB.read(reader, &packet, .{ .allocator = ar });
                     switch (packet) {
                         .status_request => {
                             const response_data =
@@ -433,7 +433,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                 },
                 .login => {
                     var packet: mcv.L.SB.UT = undefined;
-                    try mcv.L.SB.read(reader, &packet, ar);
+                    try mcv.L.SB.read(reader, &packet, .{ .allocator = ar });
                     switch (packet) {
                         .login_start => |d| {
                             self.name = try self.server.allocator.dupe(u8, d.name);
@@ -466,7 +466,39 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             });
 
                             try self.sendPacket(mcv.C.CB, .{
-                                .registry_data = DefaultRegistry,
+                                .registry_data = mcv.RegistryData.UT{
+                                    .trim_material = .{ .value = &.{} },
+                                    .trim_pattern = .{ .value = &.{} },
+                                    .damage_type = .{ .value = &registry.default_damage_types },
+                                    .biome = .{ .value = &registry.default_biomes },
+                                    .chat_type = .{ .value = &registry.default_chats },
+                                    .dimension_type = .{ .value = &.{.{
+                                        .name = "minecraft:overworld",
+                                        .id = 0,
+                                        .element = .{
+                                            .piglin_safe = false,
+                                            .natural = true,
+                                            .ambient_light = 0.0,
+                                            .monster_spawn_block_light_limit = 0,
+                                            .infiniburn = "#minecraft:infiniburn_overworld",
+                                            .respawn_anchor_works = false,
+                                            .has_skylight = true,
+                                            .bed_works = true,
+                                            .effects = .overworld,
+                                            .has_raids = true,
+                                            .logical_height = @intCast(self.server.world_height),
+                                            .coordinate_scale = 1.0,
+                                            .monster_spawn_light_level = .{ .compound = .{
+                                                .type = .uniform,
+                                                .value = .{ .min_inclusive = 0, .max_inclusive = 7 },
+                                            } },
+                                            .min_y = @intCast(self.server.world_min_y),
+                                            .ultrawarm = false,
+                                            .has_ceiling = false,
+                                            .height = @intCast(self.server.world_height),
+                                        },
+                                    }} },
+                                },
                             });
                             // TODO: tags
                             try self.sendPacket(mcv.C.CB, .{ .update_tags = &.{
@@ -500,7 +532,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                 },
                 .configuration => {
                     var packet: mcv.C.SB.UT = undefined;
-                    try mcv.C.SB.read(reader, &packet, ar);
+                    try mcv.C.SB.read(reader, &packet, .{ .allocator = ar });
                     //std.debug.print("read packet \"{s}\"\n", .{@tagName(packet)});
                     switch (packet) {
                         .client_information => |d| {
@@ -805,7 +837,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                 },
                 .play => {
                     var packet: mcv.P.SB.UT = undefined;
-                    try mcv.P.SB.read(reader, &packet, ar);
+                    try mcv.P.SB.read(reader, &packet, .{ .allocator = ar });
                     //std.debug.print("read packet \"{s}\"\n", .{@tagName(packet)});
 
                     switch (packet) {
@@ -936,7 +968,7 @@ pub fn tick(self: *Client) !void {
                         .motion_blocking = chunk.inner.hard.motion_blocking,
                         .world_surface = chunk.inner.hard.world_surface,
                     },
-                    .data = &chunk.inner.hard.sections,
+                    .data = chunk.inner.hard.sections,
                     .block_entities = &.{},
                     .light_levels = chunk.inner.hard.light_levels,
                 },
@@ -1069,8 +1101,8 @@ pub fn silentWriter(writer: anytype) SilentWriter(@TypeOf(writer)) {
 }
 
 pub fn sendPacket(self: *Client, comptime ST: type, packet: ST.UT) !void {
-    const payload_size = ST.size(packet);
-    const packet_size = payload_size + VarI32.size(@intCast(payload_size));
+    const payload_size = ST.size(packet, .{});
+    const packet_size = payload_size + VarI32.size(@intCast(payload_size), .{});
     //if (ST != mcv.P.CB or packet != .bundle_delimeter) {
     //std.debug.print(
     //    "writing packet \"{s}\" ({}, {})\n",
@@ -1093,8 +1125,8 @@ pub fn sendPacket(self: *Client, comptime ST: type, packet: ST.UT) !void {
         const silent_writer = silentWriter(stream.writer());
         const writer = stream.writer();
 
-        VarI32.write(writer, @intCast(payload_size)) catch unreachable;
-        ST.write(writer, packet) catch unreachable;
+        VarI32.write(writer, @intCast(payload_size), .{}) catch unreachable;
+        ST.write(writer, packet, .{}) catch unreachable;
 
         if (silent_writer.err) |e| {
             if (e == error.NoSpaceLeft) {

@@ -1,11 +1,11 @@
 .{
     .name = "zig-mc-server",
     .version = "0.0.0",
-    .minimum_zig_version = "0.12.0",
+    .minimum_zig_version = "0.12.0-dev.2330+9e684e8d1",
     .dependencies = .{
         .mcp = .{
-            .url = "git+https://github.com/regenerativep/zigmcp.git#4c58e31382a9bd9df3c46d47dd3efb1c3ad421ab",
-            .hash = "122095599358d9716cfa8568755be4739467fa22b7170f24f1c5c32804b5ca95a890",
+            .url = "git+https://github.com/regenerativep/zigmcp.git#8a7ccff2b551e1ebacb1e2227ff3fc3be98fe847",
+            .hash = "122092c0d8208f34523031c946156ae982f90b2612017a44d0b52e1d247c42c7d7e5",
             //.path = "../zigmcp",
         },
         .libxev = .{
