@@ -89,33 +89,25 @@ current_tick: Value(usize) = .{ .raw = 0 },
 
 keepalive_timer_comp: xev.Completion = .{},
 
-clients_lock: std.Thread.RwLock = .{},
 clients: std.SegmentedList(Client, 0) = .{},
 clients_available: std.DynamicBitSetUnmanaged = .{},
 
 accept_comp: xev.Completion = undefined,
 
-options_lock: std.Thread.RwLock = .{},
 //spawn_position: Position = .{ .x = 0, .y = 13, .z = 0 },
 spawn_position: Position = .{ .x = 0, .y = 50, .z = 0 },
 
 next_eid: usize = 1,
 
-// TODO: handle entity management more similarly to clients
-entities_lock: std.Thread.RwLock = .{},
 entities: std.SegmentedList(Entity, 0) = .{},
+entities_available: std.DynamicBitSetUnmanaged = .{},
 eid_map: std.AutoHashMapUnmanaged(usize, *Entity) = .{},
 
-unused_entities_lock: std.Thread.RwLock = .{},
-unused_entities: CleanupLL = .{},
-
-chunks_lock: std.Thread.RwLock = .{},
 chunks: std.AutoHashMapUnmanaged(ChunkPosition, *ChunkColumn) = .{},
 chunk_pool: std.heap.MemoryPool(ChunkColumn) = undefined,
 
 messages: Mpsc = undefined,
 message_pool: MessagePool = undefined,
-message_pool_lock: std.Thread.Mutex = .{},
 
 tick_arena: std.heap.ArenaAllocator = undefined,
 
@@ -129,18 +121,11 @@ stdin: XevClient(struct {
         } else {
             for (data) |b| {
                 if (b == '\n') {
-                    self.message_pool_lock.lock();
                     const msg = self.message_pool.create() catch |e| {
-                        self.message_pool_lock.unlock();
                         std.log.err("{}", .{e});
                         return;
                     };
-                    self.message_pool_lock.unlock();
-                    errdefer {
-                        self.message_pool_lock.lock();
-                        self.message_pool.destroy(msg);
-                        self.message_pool_lock.unlock();
-                    }
+                    errdefer self.message_pool.destroy(msg);
 
                     msg.* = .{ .data = .{ .run_command = .{
                         .sender = null,
@@ -183,24 +168,18 @@ fn keepAliveCb(
     //    std.hash.Wyhash.hash(20, mem.asBytes(&current_time)),
     //))));
     const keep_alive_id = current_time;
-    self.clients_lock.lockShared();
-    defer self.clients_lock.unlockShared();
     var iter = self.clients.iterator(0);
     while (iter.next()) |cl| if (cl.isAlive()) {
-        const oldest = cl.oldest_keep_alive.load(.Acquire);
-        if (oldest != Client.NullKeepAlive and
-            current_time - oldest > KeepAliveMaxTime)
+        if (cl.oldest_keep_alive != null and
+            current_time - cl.oldest_keep_alive.? > KeepAliveMaxTime)
         {
             // disconnect client
             std.log.info("No keep alive from {} in time. Kicking", .{cl.address});
-            cl.lock.lockShared();
-            defer cl.lock.unlockShared();
             cl.stop();
             continue;
         }
 
         _ = cl.keep_alives.enqueue(keep_alive_id);
-        // TODO: this might not be thread safe enough
         if (cl.inner.canSend()) {
             const res = switch (cl.state.load(.Acquire)) {
                 .configuration => cl.sendPacket(mcv.C.CB, .{
@@ -264,9 +243,7 @@ pub fn handleMessage(self: *Server, msg: *Message) !void {
     defer {
         if (msg.allocated) {
             msg.deinit(self.allocator);
-            self.message_pool_lock.lock();
             self.message_pool.destroy(msg);
-            self.message_pool_lock.unlock();
         } else {
             msg.deinit(self.allocator);
         }
@@ -274,14 +251,10 @@ pub fn handleMessage(self: *Server, msg: *Message) !void {
     switch (msg.data) {
         .chat_message => |d| {
             std.log.info("{s}: {s}", .{ d.sender.name, d.message });
-            d.sender.lock.lockShared();
-            defer d.sender.lock.unlockShared();
             const packet = mcv.P.CB.UT{
                 .player_chat_message = .{
                     .sender = blk: {
                         if (d.sender.entity) |entity| {
-                            entity.lock.lockShared();
-                            defer entity.lock.unlockShared();
                             break :blk entity.uuid;
                         }
                         break :blk mem.zeroes(mcv.Uuid.UT);
@@ -296,8 +269,6 @@ pub fn handleMessage(self: *Server, msg: *Message) !void {
                     .sender_name = .{ .string = d.sender.name },
                 },
             };
-            self.clients_lock.lockShared();
-            defer self.clients_lock.unlockShared();
             var iter = self.clients.iterator(0);
             while (iter.next()) |cl| if (cl.canSendPlay()) {
                 try cl.sendPacket(mcv.P.CB, packet);
@@ -305,27 +276,17 @@ pub fn handleMessage(self: *Server, msg: *Message) !void {
         },
         .request_chunk => |d| {
             const chunk = try self.getChunk(d.position);
-            chunk.lock.lock();
-            defer chunk.lock.unlock();
             chunk.viewers += 1;
             errdefer chunk.viewers -= 1;
 
             try d.sender.chunks_to_load.writeItem(chunk);
         },
         .client_closed => |d| {
-            // no other thread should be looking at client right now (so we
-            //     shouldnt need to lock anything in client EXCEPT if the
-            //     client is being looked at through iterating through all
-            //     clients, therefore we must lock client list until we have
-            //     completely removed the client (which we will have to lock
-            //     anyway)
             const closed_cl = d.client;
 
-            self.clients_lock.lock();
             const entity_to_return = closed_cl.entity;
             closed_cl.entity = null;
             {
-                defer self.clients_lock.unlock();
                 if (entity_to_return) |e| {
                     const packet = mcv.P.CB.UT{
                         .player_info_remove = &.{e.uuid},
@@ -397,13 +358,9 @@ pub fn tryRunCommand(
             var response = std.ArrayList(u8).init(ar);
             try response.appendSlice("Players: ");
             {
-                self.clients_lock.lockShared();
-                defer self.clients_lock.unlockShared();
                 var iter = self.clients.iterator(0);
                 var first = true;
                 while (iter.next()) |cl| if (cl.canSendPlay()) {
-                    cl.lock.lockShared();
-                    defer cl.lock.unlockShared();
                     if (cl.name.len > 0)
                         try response.appendSlice(cl.name);
                     if (first) {
@@ -440,17 +397,10 @@ pub fn tryRunCommand(
 pub fn returnEntity(self: *Server, entity: *Entity) void {
     const id = entity.id;
     {
-        self.entities_lock.lock();
-        defer self.entities_lock.unlock();
         _ = self.eid_map.remove(id);
-
-        self.unused_entities_lock.lock();
-        defer self.unused_entities_lock.unlock();
-        self.unused_entities.prepend(&entity.cleanup);
+        self.entities_available.set(entity.index_id);
     }
 
-    self.clients_lock.lockShared();
-    defer self.clients_lock.unlockShared();
     var iter = self.clients.iterator(0);
     while (iter.next()) |cl| if (cl.canSendPlay()) {
         cl.sendPacket(mcv.P.CB, .{
@@ -458,7 +408,9 @@ pub fn returnEntity(self: *Server, entity: *Entity) void {
         }) catch {}; // TODO: handle error?
     };
 
-    // TODO: deinit entity (but not the id!)
+    const eid = entity.id;
+    entity.deinit(self.allocator);
+    entity.id = eid;
 }
 
 pub fn runTick(self: *Server) !void {
@@ -480,8 +432,6 @@ pub fn runTick(self: *Server) !void {
     }
 
     {
-        self.clients_lock.lockShared();
-        defer self.clients_lock.unlockShared();
         var iter = self.clients.iterator(0);
         while (iter.next()) |cl| {
             try cl.tick();
@@ -489,8 +439,6 @@ pub fn runTick(self: *Server) !void {
     }
 
     {
-        self.entities_lock.lockShared();
-        defer self.entities_lock.unlockShared();
         var iter = self.eid_map.valueIterator();
         while (iter.next()) |e| {
             try e.*.tick(self);
@@ -499,13 +447,7 @@ pub fn runTick(self: *Server) !void {
 }
 
 pub fn getChunk(self: *Server, pos: ChunkPosition) !*ChunkColumn {
-    {
-        self.chunks_lock.lockShared();
-        defer self.chunks_lock.unlockShared();
-        if (self.chunks.get(pos)) |chunk| return chunk;
-    }
-    self.chunks_lock.lock();
-    defer self.chunks_lock.unlock();
+    if (self.chunks.get(pos)) |chunk| return chunk;
 
     // TODO: generate chunk
     const chunk = try self.chunk_pool.create();
@@ -529,25 +471,24 @@ pub fn getChunk(self: *Server, pos: ChunkPosition) !*ChunkColumn {
 }
 
 pub fn addEntity(self: *Server, pos: Position, uuid: mcv.Uuid.UT) !*Entity {
-    {
-        self.unused_entities_lock.lock();
-        defer self.unused_entities_lock.unlock();
-        if (self.unused_entities.popFirst()) |e_node| {
-            const entity = @fieldParentPtr(Entity, "cleanup", e_node);
+    const ind = self.entities_available.findFirstSet() orelse self.entities.count();
 
-            self.entities_lock.lock();
-            defer self.entities_lock.unlock();
-            try self.eid_map.putNoClobber(self.allocator, entity.id, entity);
-            return entity;
-        }
+    var entity: *Entity = undefined;
+    var eid: usize = undefined;
+
+    if (ind < self.entities.count()) {
+        entity = self.entities.at(ind);
+        eid = entity.id;
+    } else {
+        entity = try self.entities.addOne(self.allocator);
+        errdefer _ = self.entities.pop().?;
+        try self.entities_available.resize(self.allocator, self.entities.count(), true);
+        eid = self.next_eid;
+        self.next_eid += 1;
     }
-    self.entities_lock.lock();
-    defer self.entities_lock.unlock();
-    const entity = try self.entities.addOne(self.allocator);
-    entity.* = .{ .id = self.next_eid, .position = pos, .uuid = uuid };
-    self.next_eid += 1;
-
+    entity.* = .{ .index_id = ind, .id = eid, .position = pos, .uuid = uuid };
     try self.eid_map.putNoClobber(self.allocator, entity.id, entity);
+    self.entities_available.unset(ind);
 
     return entity;
 }
@@ -574,9 +515,6 @@ fn acceptCb(
 }
 
 pub fn addClient(self: *Server, stream: net.Stream, address: net.Address) !void {
-    self.clients_lock.lock();
-    defer self.clients_lock.unlock();
-
     const client, const id = if (self.clients_available.findFirstSet()) |ind| blk: {
         self.clients_available.unset(ind);
         break :blk .{ self.clients.at(ind), ind };
@@ -587,8 +525,6 @@ pub fn addClient(self: *Server, stream: net.Stream, address: net.Address) !void 
         break :blk .{ try self.clients.addOne(self.allocator), new_id };
     };
 
-    self.options_lock.lock();
-    defer self.options_lock.unlock();
     client.init(id, stream, address, self);
 }
 

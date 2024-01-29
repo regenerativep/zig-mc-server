@@ -33,7 +33,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
         .optimize = optimize,
-        .single_threaded = true,
     });
     exe.root_module.addImport("mcp", mcp_mod);
     exe.root_module.addImport("xev", xev_mod);

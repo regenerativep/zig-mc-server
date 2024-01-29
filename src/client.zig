@@ -111,8 +111,19 @@ pub const VisibleChunks = struct {
 
                 const ring, var ring_i = getRing(self.i);
                 self.i += 1;
+                //std.debug.print("ring: {}, ring_i: {}\n", .{ ring, ring_i });
 
-                if (ring == 0) return self.center;
+                if (ring == 0) {
+                    // ---
+                    // -X-
+                    // ---
+                    return self.center;
+                }
+                // -----
+                // -   -
+                // -   -
+                // -   -
+                // XXXXX
                 if (ring_i < ring * 2 + 1) {
                     return .{
                         .x = self.center.x - ring + ring_i,
@@ -120,6 +131,12 @@ pub const VisibleChunks = struct {
                     };
                 }
                 ring_i -= ring * 2 + 1;
+
+                // ----X
+                // -   X
+                // -   X
+                // -   X
+                // -----
                 if (ring_i < ring * 2) {
                     return .{
                         .x = self.center.x + ring,
@@ -127,6 +144,12 @@ pub const VisibleChunks = struct {
                     };
                 }
                 ring_i -= ring * 2;
+
+                // XXXX-
+                // -   -
+                // -   -
+                // -   -
+                // -----
                 if (ring_i < ring * 2) {
                     return .{
                         .x = self.center.x - ring + ring_i,
@@ -134,6 +157,12 @@ pub const VisibleChunks = struct {
                     };
                 }
                 ring_i -= ring * 2;
+
+                // -----
+                // X   -
+                // X   -
+                // X   -
+                // -----
                 return .{
                     .x = self.center.x - ring,
                     .z = self.center.z - ring + 1 + ring_i,
@@ -145,8 +174,8 @@ pub const VisibleChunks = struct {
             return .{
                 .rect = self,
                 .center = .{
-                    .x = @divTrunc(self.a.x + self.b.x, 2),
-                    .z = @divTrunc(self.a.z + self.b.z, 2),
+                    .x = @divFloor(self.a.x + self.b.x, 2),
+                    .z = @divFloor(self.a.z + self.b.z, 2),
                 },
                 .until = @intCast((self.b.x - self.a.x) * (self.b.z - self.a.z)),
             };
@@ -197,11 +226,13 @@ pub const VisibleChunks = struct {
             if (std.meta.eql(last.pos, new_position))
                 return .{ .new = &.{}, .remove = &.{} };
 
+            // max size is area of last plus area of current
             try self.buffer.ensureTotalCapacity(a, @intCast(
                 (rect.b.x - rect.a.x) * (rect.b.z - rect.a.z) +
                     (last.rect.b.x - last.rect.a.x) * (last.rect.b.z - last.rect.a.z),
             ));
 
+            // add any new chunks that are in new area but not in last area
             {
                 var iter = rect.iterator();
                 while (iter.next()) |pos| {
@@ -211,6 +242,8 @@ pub const VisibleChunks = struct {
             }
             const new_len = self.buffer.items.len;
 
+            // add the chunks to be removed that were in the last area but not in
+            //     current area
             {
                 var iter = last.rect.iterator();
                 while (iter.next()) |pos| {
@@ -283,14 +316,7 @@ address: net.Address,
 
 server: *Server,
 
-/// recv thread only
 packet: PacketSM = .{ .waiting = .{} },
-// TODO: state may need to be a locked value, not an atomic. at the moment, it is not
-//     an issue because once state is play, it doesnt change. but if we ever switch back
-//     to configuration state (or if we make the configuration state more complex),
-//     usage of state must block others waiting to do things based on it
-/// modified by recv thread only
-/// readable outside of recv thread
 state: Value(enum(u8) {
     handshake,
     status,
@@ -298,33 +324,24 @@ state: Value(enum(u8) {
     configuration,
     play,
 }) = .{ .raw = .handshake },
-/// recv thread only
 arena: std.heap.ArenaAllocator,
 
-/// locked by `lock`
 visible_chunks: VisibleChunks = .{},
 
-/// accessed only during tick
 chunks_to_load: ChunksToLoad,
 
 desired_chunks_per_tick: usize = 25,
 initial_chunks: ?usize = null,
 
-/// write: keepalive thread
-/// read: recv thread
 keep_alives: Spsc(i64, math.log2_int_ceil(usize, Server.MaxKeepAlives)) = .{},
-// doing `NullKeepAlive` cause im guessing ?i64 is not suitable for atomics
-oldest_keep_alive: std.atomic.Value(i64) = .{ .raw = NullKeepAlive },
+oldest_keep_alive: ?i64 = null,
 
-lock: std.Thread.RwLock = .{},
-/// lock `lock`
 next_teleport_id: i32 = 1,
 name: []const u8 = "",
 entity: ?*Entity = null,
 info: ?mcv.ClientInformation.UT = null,
 
 preloaded_messages: std.ArrayListUnmanaged(*Server.Message) = .{},
-preloaded_messages_lock: std.Thread.RwLock = .{},
 
 pub fn init(
     self: *Client,
@@ -344,19 +361,13 @@ pub fn init(
     self.inner.init(&server.loop, stream.handle);
 }
 
-/// Gets a server message node preferably from our local preload, but will lock and get
+/// Gets a server message node preferably from our local preload, but will get
 /// more from server when necessary
 pub fn getMessage(self: *Client) !*Server.Message {
     {
-        self.preloaded_messages_lock.lockShared();
-        defer self.preloaded_messages_lock.unlockShared();
         if (self.preloaded_messages.popOrNull()) |n| return n;
     }
     {
-        self.preloaded_messages_lock.lock();
-        defer self.preloaded_messages_lock.unlock();
-        self.server.message_pool_lock.lock();
-        defer self.server.message_pool_lock.unlock();
         // TODO: find a better way to preload
         if (self.preloaded_messages.capacity == 0) {
             try self.preloaded_messages.ensureTotalCapacity(self.server.allocator, 16);
@@ -438,8 +449,6 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                         .login_start => |d| {
                             self.name = try self.server.allocator.dupe(u8, d.name);
 
-                            self.server.options_lock.lockShared();
-                            defer self.server.options_lock.unlockShared();
                             const entity = try self.server.addEntity(
                                 self.server.spawn_position,
                                 mcv.Uuid.fromUsername(self.name),
@@ -547,9 +556,6 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                         .finish_configuration => {
                             self.state.store(.play, .Release);
 
-                            self.lock.lock();
-                            defer self.lock.unlock();
-
                             try self.sendPacket(mcv.P.CB, .{
                                 .login = .{
                                     .entity_id = @intCast(self.entity.?.id),
@@ -656,8 +662,6 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             });
 
                             if (self.entity) |entity| {
-                                entity.lock.lockShared();
-                                defer entity.lock.unlockShared();
                                 try self.sendPacket(mcv.P.CB, .{
                                     .synchronize_player_position = .{
                                         .position = .{
@@ -681,9 +685,6 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                 self.next_teleport_id += 1;
 
                                 const other_players = blk: {
-                                    self.server.clients_lock.lockShared();
-                                    defer self.server.clients_lock.unlockShared();
-
                                     var actions = try ar.alloc(
                                         mcv.PlayerInfoUpdate.PlayerAction,
                                         self.server.clients.count(),
@@ -728,13 +729,8 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                                         // dont add self to list of all players
                                         if (cl == self) continue;
 
-                                        cl.lock.lockShared();
-                                        defer cl.lock.unlockShared();
-
                                         actions[i] = .{
                                             .uuid = if (cl.entity) |e| blk2: {
-                                                e.lock.lockShared();
-                                                defer e.lock.unlockShared();
                                                 break :blk2 e.uuid;
                                             } else mem.zeroes(mcv.Uuid.UT),
                                             .add_player = .{
@@ -808,8 +804,6 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                             // TODO: update_time all the other times in the future
 
                             {
-                                self.server.options_lock.lockShared();
-                                defer self.server.options_lock.unlockShared();
                                 try self.sendPacket(mcv.P.CB, .{
                                     .set_default_spawn_position = .{
                                         .location = .{
@@ -851,11 +845,7 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                         .set_player_position_and_rotation,
                         .set_player_on_ground,
                         => |d, v| {
-                            self.lock.lockShared();
-                            defer self.lock.unlockShared();
                             if (self.entity) |entity| {
-                                entity.lock.lockShared();
-                                defer entity.lock.unlockShared();
                                 switch (v) {
                                     .set_player_position,
                                     .set_player_position_and_rotation,
@@ -890,11 +880,6 @@ pub fn updateState(self: *Client, data: []const u8) !void {
                         },
                         .chat_command => |d| {
                             const msg = try self.getMessage();
-                            errdefer {
-                                self.preloaded_messages_lock.lockShared();
-                                self.preloaded_messages.appendAssumeCapacity(msg);
-                                self.preloaded_messages_lock.lockShared();
-                            }
                             msg.* = .{ .data = .{ .run_command = .{
                                 .sender = self,
                                 .command = try self.server.allocator
@@ -922,11 +907,11 @@ pub fn receiveKeepAlive(self: *Client, value: i64) void {
                 _ = self.keep_alives.dequeue();
                 continue;
             } else {
-                self.oldest_keep_alive.store(v.*, .Release);
+                self.oldest_keep_alive = v.*;
                 break;
             }
         } else {
-            self.oldest_keep_alive.store(NullKeepAlive, .Release);
+            self.oldest_keep_alive = null;
             break;
         }
     }
@@ -943,8 +928,6 @@ pub fn tick(self: *Client) !void {
     //     thread)
     if (self.chunks_to_load.count > 0) {
         const total_chunks_to_load = blk: {
-            self.lock.lockShared();
-            defer self.lock.unlockShared();
             break :blk @min(
                 self.desired_chunks_per_tick,
                 self.chunks_to_load.count,
@@ -956,9 +939,6 @@ pub fn tick(self: *Client) !void {
         var chunks_loaded: usize = 0;
         while (chunks_loaded < total_chunks_to_load) : (chunks_loaded += 1) {
             const chunk = self.chunks_to_load.readItem() orelse break;
-
-            chunk.lock.lock();
-            defer chunk.lock.unlock();
 
             try self.sendPacket(mcv.P.CB, .{
                 .chunk_data_and_update_light = .{
@@ -979,11 +959,7 @@ pub fn tick(self: *Client) !void {
             if (total_chunks_to_load >= initial_chunks.*) {
                 self.initial_chunks = null;
 
-                self.lock.lockShared();
-                defer self.lock.unlockShared();
                 if (self.entity) |entity| {
-                    entity.lock.lockShared();
-                    defer entity.lock.unlockShared();
                     const current_chunk_pos =
                         VisibleChunks.getChunkPosition(entity.position);
                     try self.sendPacket(mcv.P.CB, .{ .set_center_chunk = .{
@@ -1013,9 +989,6 @@ pub fn tick(self: *Client) !void {
                     self.next_teleport_id += 1;
                 }
                 {
-                    self.server.options_lock.lockShared();
-                    defer self.server.options_lock.unlockShared();
-                    std.debug.print("sent initial chunks\n", .{});
                     try self.sendPacket(mcv.P.CB, .{
                         .set_default_spawn_position = .{
                             .location = .{
@@ -1046,17 +1019,11 @@ pub fn tick(self: *Client) !void {
                 try self.sendPacket(mcv.P.CB, .{ .step_tick = 0 });
 
                 {
-                    self.server.clients_lock.lockShared();
-                    defer self.server.clients_lock.unlockShared();
                     // send all other client entities to client
                     var iter = self.server.clients.iterator(0);
                     while (iter.next()) |cl| {
                         if (cl != self and cl.canSendPlay()) {
-                            cl.lock.lockShared();
-                            defer cl.lock.unlockShared();
                             if (cl.entity) |e| {
-                                e.lock.lockShared();
-                                defer e.lock.unlockShared();
                                 try e.sendSpawn(self);
                             }
                         }
@@ -1148,12 +1115,9 @@ pub fn sendPacket(self: *Client, comptime ST: type, packet: ST.UT) !void {
 }
 
 /// TODO: this is more like request rather than send
-/// self.lock should be locked
 pub fn sendChunks(self: *Client, send_center: bool) !void {
     const res = blk: {
         if (self.entity == null) return;
-        self.entity.?.lock.lockShared();
-        defer self.entity.?.lock.unlockShared();
 
         const current_chunk_pos =
             VisibleChunks.getChunkPosition(self.entity.?.position);
@@ -1189,8 +1153,6 @@ pub fn sendChunks(self: *Client, send_center: bool) !void {
     }
     //for (res.remove) |pos| {
     //    const chunk = try self.server.getChunk(pos);
-    //    chunk.lock.lock();
-    //    defer chunk.lock.unlock();
     //    chunk.viewers -|= 1; // should not ever sub 1 from 0, but whatever
     // TODO: notify chunk cleanup if viewers == 0
 
@@ -1218,8 +1180,6 @@ pub inline fn stop(self: *Client) void {
 pub fn deinit(self: *Client) void {
     // server handles freeing the entity before this fn is called
     {
-        self.server.message_pool_lock.lock();
-        defer self.server.message_pool_lock.unlock();
         var i = self.preloaded_messages.items.len;
         while (i > 0) {
             i -= 1;
@@ -1236,3 +1196,21 @@ pub fn deinit(self: *Client) void {
     self.inner.deinit(self.server.allocator);
     self.* = undefined;
 }
+
+// test "visible chunks" {
+//     var chunks = VisibleChunks{};
+//     defer chunks.deinit(testing.allocator);
+//     var r = try chunks.move(testing.allocator, .{ .x = 0, .z = 0 }, 1);
+//     std.debug.print("new: \n  ", .{});
+//     for (r.new) |p| std.debug.print("({:>2}, {:>2}) ", .{ p.x, p.z });
+//     std.debug.print("\nremove: \n  ", .{});
+//     for (r.remove) |p| std.debug.print("({:>2}, {:>2}) ", .{ p.x, p.z });
+//     std.debug.print("\n", .{});
+
+//     r = try chunks.move(testing.allocator, .{ .x = 0, .z = -1 }, 1);
+//     std.debug.print("new: \n  ", .{});
+//     for (r.new) |p| std.debug.print("({:>2}, {:>2}) ", .{ p.x, p.z });
+//     std.debug.print("\nremove: \n  ", .{});
+//     for (r.remove) |p| std.debug.print("({:>2}, {:>2}) ", .{ p.x, p.z });
+//     std.debug.print("\n", .{});
+// }

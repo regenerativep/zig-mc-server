@@ -9,11 +9,11 @@ const lib = @import("lib.zig");
 const Server = lib.Server;
 const Client = lib.Client;
 
+index_id: usize,
 id: usize,
 uuid: mcv.Uuid.UT = mem.zeroes(mcv.Uuid.UT),
-cleanup: Server.CleanupLL.Node = .{ .data = {} },
+cleanup: Server.Message = undefined,
 
-lock: std.Thread.RwLock = .{},
 position: lib.Position,
 on_ground: bool = false,
 yaw: f32 = 0,
@@ -27,10 +27,6 @@ last_pitch: ?f32 = null,
 const Self = @This();
 
 pub fn tick(self: *Self, server: *Server) !void {
-    self.lock.lock();
-    defer self.lock.unlock();
-    //std.debug.print("entity tick {}\n", .{self.id});
-
     defer {
         self.last_on_ground = self.on_ground;
         self.last_pitch = self.pitch;
@@ -115,13 +111,8 @@ pub fn tick(self: *Self, server: *Server) !void {
     } } else null;
     //std.debug.print("sending {s}\n", .{@tagName(packet)});
 
-    server.clients_lock.lockShared();
-    defer server.clients_lock.unlockShared();
     var iter = server.clients.iterator(0);
     while (iter.next()) |cl| {
-        cl.lock.lockShared();
-        defer cl.lock.unlockShared();
-
         if (cl.canSendPlay() and cl.entity != null and cl.entity != self) {
             try cl.sendPacket(mcv.P.CB, packet);
             if (head_packet) |p| try cl.sendPacket(mcv.P.CB, p);
@@ -148,4 +139,8 @@ pub fn sendSpawn(self: *Self, cl: *Client) !void {
             .velocity = .{ .x = 0, .y = 0, .z = 0 },
         },
     });
+}
+
+pub fn deinit(self: *Self, _: std.mem.Allocator) void {
+    self.* = undefined;
 }
